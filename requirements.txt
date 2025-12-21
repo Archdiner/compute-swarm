@@ -17,8 +17,8 @@ web3==6.15.0
 eth-account==0.10.0
 base58==2.1.1
 
-# Coinbase SDK (placeholder - will need actual x402 SDK when available)
-# coinbase-advanced-py==1.3.0
+# x402 Payment Protocol (Official Coinbase SDK)
+x402>=0.2.1  # HTTP 402 Payment Required protocol for blockchain payments
 
 # Environment and Configuration
 python-dotenv==1.0.0
