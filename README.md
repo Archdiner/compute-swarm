@@ -7,7 +7,8 @@ Decentralized P2P GPU marketplace using [x402 protocol](https://x402.org) for pe
 - **x402 Payments**: HTTP 402-based USDC micropayments on Base L2
 - **Multi-GPU Support**: NVIDIA CUDA + Apple Silicon MPS
 - **Per-Second Pricing**: Pay only for compute time used
-- **Production-Ready**: PostgreSQL, Redis, comprehensive tests
+- **Production-Ready**: Supabase, Upstash Redis, comprehensive tests
+- **100% Free Tier**: All services available on free plans
 
 ## Architecture
 
@@ -15,9 +16,9 @@ Decentralized P2P GPU marketplace using [x402 protocol](https://x402.org) for pe
 **Seller Agent** (Python): GPU detection, job execution, payment verification
 **Buyer CLI** (Python): Node discovery, job submission, automated payments
 
-**Tech Stack**: FastAPI, PostgreSQL, Redis, x402 SDK, Web3.py, PyTorch
+**Tech Stack**: FastAPI, Supabase (PostgreSQL), Upstash Redis, x402 SDK, Web3.py, PyTorch
 
-See [TECH_STACK.md](TECH_STACK.md) for details.
+All services free tier compatible. See [FREE_TIER_SETUP.md](FREE_TIER_SETUP.md).
 
 ## Quick Start
 

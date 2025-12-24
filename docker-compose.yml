@@ -6,34 +6,23 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/computeswarm
-      - REDIS_URL=redis://redis:6379/0
+      # Use Supabase cloud (no local DB needed)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Use Upstash cloud (no local Redis needed)
+      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
+      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
+
+      # Blockchain
       - NETWORK=base-sepolia
-    depends_on:
-      - db
-      - redis
+      - SELLER_PRIVATE_KEY=${SELLER_PRIVATE_KEY}
+      - BUYER_PRIVATE_KEY=${BUYER_PRIVATE_KEY}
+    env_file:
+      - .env
     restart: unless-stopped
 
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=computeswarm
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
-  redis_data:
+# Note: No database or redis containers needed!
+# Using Supabase (cloud PostgreSQL) and Upstash (cloud Redis)
+# This makes deployment simpler and uses free tiers

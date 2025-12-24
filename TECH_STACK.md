@@ -1,91 +1,116 @@
 # ComputeSwarm Production Tech Stack
 
-## Core Stack
+## Core Stack (100% Free Tier)
 
 ### Backend Framework
 - **FastAPI** - Async-native, type-safe, high-performance
-- **Uvicorn** with Gunicorn workers for production (multi-core)
+- **Uvicorn** with Gunicorn workers for production
 - **Pydantic V2** - Data validation and serialization
 
 ### Database
-- **PostgreSQL 15+** - Primary datastore
-  - ACID compliance for payment tracking
-  - JSONB for flexible GPU metadata
-  - Connection pooling via SQLAlchemy async
-- **Redis 7+** - Caching and session management
-  - Node heartbeat tracking (TTL-based)
-  - Rate limiting
-  - Job queue (optional: use Redis Streams)
+- **Supabase** - Managed PostgreSQL with real-time features
+  - **Free Tier**: 500MB database, 2GB bandwidth/month, 50,000 monthly active users
+  - Built-in auth, real-time subscriptions, storage
+  - PostgreSQL 15+ under the hood
+  - Connection pooling included
+  - Row-level security (RLS)
+  - Auto-generated REST API
+
+### Caching & Queue
+- **Upstash Redis** - Serverless Redis (free tier)
+  - **Free Tier**: 10,000 commands/day
+  - Global edge caching
+  - Durable storage
+  - No cold starts
+- **Alternative**: Supabase Edge Functions + PostgreSQL for simple caching
 
 ### Blockchain/Web3
-- **web3.py** - Ethereum interaction
-- **eth-account** - Wallet management and signing
-- **x402** - Payment protocol SDK
-- **Base (L2)** - Primary network (lower fees than mainnet)
+- **web3.py** - Ethereum interaction (free, open source)
+- **eth-account** - Wallet management (free)
+- **x402** - Payment protocol SDK (free)
+- **Base Sepolia** - L2 testnet (free, no gas fees on testnet)
+- **Base Mainnet** - L2 production (very low fees, ~$0.0001/tx)
 
 ### Payment Processing
-- **x402 Protocol** - HTTP 402 payment standard
-- **USDC** - Stablecoin for settlements
-- **EIP-712** - Typed data signing
+- **x402 Protocol** - HTTP 402 standard (free SDK)
+- **USDC** - Stablecoin for settlements (free to use)
+- **EIP-712** - Typed data signing (free standard)
 
 ### Testing
-- **pytest** - Test framework
-- **pytest-asyncio** - Async test support
-- **httpx** - Async HTTP client for testing
-- **eth-tester** - Local Ethereum blockchain for tests
-- **pytest-cov** - Code coverage
-- **Factory Boy** - Test data factories
+- **pytest** - Test framework (free)
+- **pytest-asyncio** - Async support (free)
+- **httpx** - HTTP client (free)
+- **eth-tester** - Local Ethereum blockchain (free)
+- **pytest-cov** - Code coverage (free)
+- **Factory Boy** - Test data factories (free)
 
 ### Deployment & Infrastructure
-- **Docker** - Containerization
-- **Docker Compose** - Local multi-service orchestration
-- **Gunicorn + Uvicorn workers** - Production ASGI server
-- **Nginx** - Reverse proxy and load balancing
-- **PostgreSQL + Redis** - Data layer
+- **Render** - Free tier hosting
+  - **Free Tier**: 750 hours/month, auto-sleep after inactivity
+  - Native support for FastAPI
+  - Auto SSL certificates
+- **Alternative**: Railway (500 hours/month free)
+- **Alternative**: Fly.io (3 shared VMs free)
+- **Docker** - Containerization (free)
 
 ### Monitoring & Observability
-- **structlog** - Structured logging (JSON)
-- **Prometheus** - Metrics collection (future)
-- **Grafana** - Metrics visualization (future)
-- **Sentry** - Error tracking (future)
+- **structlog** - Structured logging (free)
+- **Sentry** - Error tracking (free tier: 5K errors/month)
+- **BetterStack** - Free logs (1GB/month)
 
 ### CI/CD
-- **GitHub Actions** - CI/CD pipeline
-- **pytest + coverage** - Automated testing
-- **Black + isort + flake8** - Code quality
-- **mypy** - Type checking
+- **GitHub Actions** - Free for public repos, 2000 min/month private
+- **pytest + coverage** - Automated testing (free)
 
 ---
 
-## Architecture Decisions
+## Cost Breakdown (Monthly)
 
-### Why PostgreSQL over others?
-- **ACID compliance** critical for payment tracking
-- **JSONB** allows flexible GPU metadata without schema changes
-- **Mature ecosystem** with excellent Python support
-- **Async SQLAlchemy** for non-blocking queries
+| Service | Free Tier | Paid (if needed) |
+|---------|-----------|------------------|
+| Supabase | 500MB DB, 2GB bandwidth | $25/month (8GB DB) |
+| Upstash Redis | 10K commands/day | $0.20/100K commands |
+| Render Hosting | 750 hours/month | $7/month (always-on) |
+| Base Sepolia | Free (testnet) | N/A |
+| Base Mainnet | Pay per tx (~$0.0001) | Variable |
+| GitHub Actions | 2000 min/month | $0.008/minute |
+| Sentry | 5K errors/month | $26/month |
 
-### Why Redis?
-- **Sub-millisecond latency** for heartbeat checks
-- **TTL support** for automatic node cleanup
-- **Atomic operations** for rate limiting
-- **Pub/Sub** for real-time updates (future WebSocket support)
-
-### Why FastAPI?
-- **Async-native** - Essential for I/O-heavy workloads
-- **Type safety** - Pydantic integration catches errors early
-- **Auto-documentation** - OpenAPI/Swagger out of box
-- **Performance** - Comparable to Node.js and Go
-
-### Why Base (L2)?
-- **Low fees** (~$0.0001 per transaction vs $1-50 on mainnet)
-- **Fast finality** (~2 seconds vs 12-15 seconds on mainnet)
-- **Coinbase backing** - Strong x402 support
-- **EVM compatible** - Same tooling as Ethereum
+**Total for MVP**: $0/month (all free tiers)
+**Total for production**: ~$32/month (Supabase + Render always-on)
 
 ---
 
-## Database Schema (PostgreSQL)
+## Why Supabase over Self-Hosted PostgreSQL?
+
+1. **Zero DevOps** - No need to manage database servers
+2. **Free Tier** - 500MB database is enough for MVP (thousands of jobs)
+3. **Built-in Features** - Auth, real-time, storage included
+4. **Auto-scaling** - Handles traffic spikes automatically
+5. **Backups** - Daily backups included in free tier
+6. **Global CDN** - Edge caching for read queries
+7. **Dashboard** - Visual database management
+8. **SQL Editor** - Built-in query tool
+
+### Why Upstash Redis?
+
+1. **Serverless** - Pay only for what you use
+2. **Free Tier** - 10K commands/day covers dev + light production
+3. **Global** - Edge locations for low latency
+4. **Durable** - Persistent storage (not just cache)
+5. **No Cold Starts** - Always ready
+
+### Why Render for Hosting?
+
+1. **Free Tier** - 750 hours/month (enough for 24/7 with sleep)
+2. **Zero Config** - Detects FastAPI automatically
+3. **Auto SSL** - Free HTTPS certificates
+4. **Git Deploy** - Push to deploy
+5. **Health Checks** - Auto-restart on failure
+
+---
+
+## Database Schema (Supabase/PostgreSQL)
 
 ### Tables
 
@@ -145,14 +170,11 @@ CREATE TABLE payments (
 
 ---
 
-## Redis Keys
+## Upstash Redis Keys
 
-```
+```python
 # Node heartbeat (TTL: 60s)
 heartbeat:{node_id} → timestamp
-
-# Node status cache (TTL: 30s)
-node:{node_id} → JSON
 
 # Rate limiting (TTL: 60s)
 ratelimit:{ip}:{endpoint} → counter
@@ -160,13 +182,127 @@ ratelimit:{ip}:{endpoint} → counter
 # Job status cache (TTL: 300s)
 job:{job_id} → JSON
 
-# Active jobs by node
-node:{node_id}:jobs → SET of job_ids
+# Note: Use Supabase for persistent data, Upstash only for caching/rate limiting
 ```
 
 ---
 
-## Testing Strategy
+## Supabase Configuration
+
+### Setup
+
+```bash
+# 1. Create project at supabase.com
+# 2. Get connection string from project settings
+# 3. Add to .env
+
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_KEY=your-service-role-key
+DATABASE_URL=postgresql://postgres:[password]@db.your-project.supabase.co:5432/postgres
+```
+
+### Python Client
+
+```python
+from supabase import create_client, Client
+
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_ANON_KEY")
+)
+
+# Insert data
+data = supabase.table("nodes").insert({
+    "seller_address": "0x123...",
+    "gpu_info": {"type": "cuda", "vram": 24},
+    "price_per_hour": 2.00
+}).execute()
+
+# Query data
+nodes = supabase.table("nodes").select("*").eq("status", "available").execute()
+```
+
+### Real-time Subscriptions (Bonus)
+
+```python
+# Subscribe to new jobs
+def handle_new_job(payload):
+    print(f"New job: {payload}")
+
+supabase.table("jobs").on("INSERT", handle_new_job).subscribe()
+```
+
+---
+
+## Upstash Redis Setup
+
+```bash
+# 1. Create database at upstash.com
+# 2. Get REST URL and token
+# 3. Add to .env
+
+UPSTASH_REDIS_REST_URL=https://your-db.upstash.io
+UPSTASH_REDIS_REST_TOKEN=your-token
+```
+
+### Python Client
+
+```python
+from upstash_redis import Redis
+
+redis = Redis(
+    url=os.getenv("UPSTASH_REDIS_REST_URL"),
+    token=os.getenv("UPSTASH_REDIS_REST_TOKEN")
+)
+
+# Set with TTL
+redis.setex("heartbeat:node_123", 60, "2025-01-01T12:00:00")
+
+# Get
+heartbeat = redis.get("heartbeat:node_123")
+
+# Increment (rate limiting)
+count = redis.incr("ratelimit:192.168.1.1:/api/v1/jobs")
+redis.expire("ratelimit:192.168.1.1:/api/v1/jobs", 60)
+```
+
+---
+
+## Deployment Architecture
+
+### Development (Free)
+```
+Local Machine
+├── FastAPI app (localhost:8000)
+├── Supabase (cloud, free tier)
+└── Upstash Redis (cloud, free tier)
+```
+
+### Production (Free Tier)
+```
+Render (free tier)
+  └── FastAPI app (auto-sleep after 15min inactivity)
+Supabase (free tier)
+  └── PostgreSQL database
+Upstash Redis (free tier)
+  └── Caching & rate limiting
+GitHub Actions (free)
+  └── CI/CD pipeline
+```
+
+### Production (Paid, ~$32/month)
+```
+Render ($7/month, always-on)
+  ├── FastAPI instance 1
+  └── FastAPI instance 2 (load balanced)
+Supabase ($25/month, 8GB)
+  └── PostgreSQL with backups
+Upstash Redis ($0-5/month)
+  └── Pro tier with more commands
+Sentry (free tier)
+  └── Error tracking
+```
 
 ### Unit Tests
 - Individual functions and classes
@@ -300,24 +436,47 @@ uvicorn[standard]==0.27.0
 gunicorn==21.2.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
-sqlalchemy[asyncio]==2.0.25
-asyncpg==0.29.0  # PostgreSQL async driver
-redis[hiredis]==5.0.1
-x402>=0.2.1
+
+# Database
+supabase==2.3.4  # Supabase Python client
+upstash-redis==0.15.0  # Upstash Redis client
+
+# HTTP Client
+httpx==0.26.0
+
+# GPU Compute
+torch==2.1.2
+torchvision==0.16.2
+
+# Blockchain & Payments
 web3==6.15.0
 eth-account==0.10.0
+x402>=0.2.1
+
+# Logging
 structlog==24.1.0
+
+# Configuration
+python-dotenv==1.0.0
+
+# CLI
+rich==13.7.0
+
+# Performance
+uvloop==0.19.0
 
 # Development & Testing
 pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
-httpx==0.26.0
-eth-tester==0.9.1b1
+pytest-mock==3.12.0
 factory-boy==3.3.0
+eth-tester==0.10.0b4
 black==23.12.1
 isort==5.13.2
+flake8==7.0.0
 mypy==1.8.0
+ipython==8.18.1
 ```
 
 ---
