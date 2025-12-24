@@ -1,39 +1,70 @@
 # ComputeSwarm
 
-Decentralized P2P GPU marketplace using [x402 protocol](https://x402.org) for per-second USDC payments.
+**Queue-based P2P GPU marketplace** using [x402 protocol](https://x402.org) for per-second USDC payments.
 
 ## Features
 
+- **Queue-Based Architecture**: Fault-tolerant job queue with atomic claiming
 - **x402 Payments**: HTTP 402-based USDC micropayments on Base L2
 - **Multi-GPU Support**: NVIDIA CUDA + Apple Silicon MPS
-- **Per-Second Pricing**: Pay only for compute time used
-- **Production-Ready**: Supabase, Upstash Redis, comprehensive tests
+- **Job Execution Engine**: Isolated Python script execution with safety controls
+- **Production Database**: Supabase PostgreSQL with real-time updates
 - **100% Free Tier**: All services available on free plans
 
 ## Architecture
 
-**Marketplace** (FastAPI): Node discovery, x402 manifest, job registry
-**Seller Agent** (Python): GPU detection, job execution, payment verification
-**Buyer CLI** (Python): Node discovery, job submission, automated payments
+**Queue-Based Job System**: Buyers submit to queue, sellers poll and claim jobs atomically. No direct node assignment needed. See [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md) for details.
 
-**Tech Stack**: FastAPI, Supabase (PostgreSQL), Upstash Redis, x402 SDK, Web3.py, PyTorch
+**Marketplace** (FastAPI): Job queue management, statistics, maintenance tasks
+**Seller Agent** (Python): GPU detection, queue polling, job execution, result reporting
+**Buyer CLI** (Python): Job submission, status monitoring, cancellation
+
+**Tech Stack**: FastAPI, Supabase (PostgreSQL), x402 SDK, Web3.py, PyTorch
 
 All services free tier compatible. See [FREE_TIER_SETUP.md](FREE_TIER_SETUP.md).
 
 ## Quick Start
 
 ```bash
-# Setup
-make install
-cp .env.example .env  # Add your wallet keys
+# 1. Setup database
+# Create Supabase project at https://app.supabase.com
+# Run src/database/schema.sql in SQL Editor
+# Copy URL and anon key
 
-# Run tests
+# 2. Install dependencies
+make install
+cp .env.example .env
+
+# 3. Configure environment
+# Edit .env with:
+#   - SUPABASE_URL and SUPABASE_ANON_KEY
+#   - SELLER_PRIVATE_KEY and BUYER_PRIVATE_KEY
+
+# 4. Run tests
 make test
 
-# Start services
+# 5. Start services
 make run-marketplace  # Terminal 1
 make run-seller       # Terminal 2
-make run-buyer        # Terminal 3
+make run-buyer        # Terminal 3 (interactive CLI)
+```
+
+### Example Usage
+
+```bash
+# In buyer CLI
+> stats              # View marketplace statistics
+> submit             # Submit job to queue
+  Path: examples/hello.py
+  Max price: 2.0
+  GPU: cuda
+
+✓ Job submitted (ID: abc-123)
+
+> status abc-123     # Check job status
+Status: COMPLETED
+Output: Hello from GPU!
+Cost: $0.0012
 ```
 
 ## Development

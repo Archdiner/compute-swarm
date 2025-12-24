@@ -1,36 +1,30 @@
 """
 ComputeSwarm Marketplace Server
-FastAPI-based discovery layer for P2P GPU marketplace
+Queue-based job marketplace with Supabase database
 """
 
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
+from decimal import Decimal
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import structlog
 
 from src.marketplace.models import (
-    ComputeNode,
     NodeRegistration,
-    NodeStatus,
     X402Manifest,
     GPUType,
-    Job,
-    JobRequest,
-    JobStatus
 )
+from src.models import JobStatus, ComputeJob
 from src.config import get_marketplace_config
+from src.database import get_db_client
 
 # Initialize structured logger
 logger = structlog.get_logger()
-
-# In-memory storage (will be replaced with database in Phase 2)
-nodes_db: Dict[str, ComputeNode] = {}
-jobs_db: Dict[str, Job] = {}
 
 
 @asynccontextmanager
@@ -43,8 +37,54 @@ async def lifespan(app: FastAPI):
         port=config.marketplace_port,
         network=config.network
     )
+
+    # Initialize database client
+    try:
+        db = get_db_client()
+        logger.info("database_connected", database="supabase")
+    except Exception as e:
+        logger.error("database_connection_failed", error=str(e))
+        raise
+
+    # Start background maintenance tasks
+    import asyncio
+    maintenance_task = asyncio.create_task(run_maintenance_tasks())
+
     yield
+
+    # Cleanup
+    maintenance_task.cancel()
+    try:
+        await maintenance_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("marketplace_shutting_down")
+
+
+async def run_maintenance_tasks():
+    """Background task to clean up stale jobs and claims"""
+    db = get_db_client()
+
+    while True:
+        try:
+            await asyncio.sleep(60)  # Run every minute
+
+            # Release stale claims (claimed but not started in 5 minutes)
+            released = await db.release_stale_claims(stale_minutes=5)
+            if released > 0:
+                logger.info("stale_claims_released", count=released)
+
+            # Mark stale executions as failed (executing > 2x timeout)
+            failed = await db.mark_stale_executions_failed(timeout_multiplier=2.0)
+            if failed > 0:
+                logger.warning("stale_executions_marked_failed", count=failed)
+
+        except asyncio.CancelledError:
+            logger.info("maintenance_tasks_stopped")
+            raise
+        except Exception as e:
+            logger.error("maintenance_task_error", error=str(e))
 
 
 # Initialize FastAPI app
@@ -104,211 +144,473 @@ async def get_x402_manifest():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "active_nodes": len([n for n in nodes_db.values() if n.status == NodeStatus.AVAILABLE]),
-        "total_nodes": len(nodes_db),
-        "active_jobs": len([j for j in jobs_db.values() if j.status == JobStatus.RUNNING])
-    }
+    db = get_db_client()
+
+    try:
+        # Get statistics from database
+        stats = await db.get_queue_stats()
+        active_sellers = await db.get_active_sellers_view()
+
+        status_counts = {s["status"]: s["job_count"] for s in stats}
+
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "database": "connected",
+            "active_nodes": len(active_sellers),
+            "jobs": {
+                "pending": status_counts.get("PENDING", 0),
+                "executing": status_counts.get("EXECUTING", 0),
+                "completed": status_counts.get("COMPLETED", 0),
+                "failed": status_counts.get("FAILED", 0)
+            }
+        }
+    except Exception as e:
+        logger.error("health_check_failed", error=str(e))
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(e)
+        }, 503
 
 
 # ============================================================================
 # Node Management Endpoints
 # ============================================================================
 
-@app.post("/api/v1/nodes/register", response_model=ComputeNode, status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/nodes/register", status_code=status.HTTP_201_CREATED)
 async def register_node(registration: NodeRegistration):
     """
     Register a new compute node in the marketplace
     Called by Seller Agent on startup
     """
-    node_id = f"node_{uuid.uuid4()}"
+    db = get_db_client()
+
+    from src.models import ComputeNode
+    node_id = f"node_{uuid.uuid4().hex[:12]}"
 
     node = ComputeNode(
         node_id=node_id,
         seller_address=registration.seller_address,
         gpu_info=registration.gpu_info,
         price_per_hour=registration.price_per_hour,
-        endpoint=registration.endpoint,
-        status=NodeStatus.AVAILABLE
+        is_available=True
     )
 
-    nodes_db[node_id] = node
+    await db.register_node(node)
 
     logger.info(
         "node_registered",
         node_id=node_id,
         seller=registration.seller_address,
-        gpu_type=registration.gpu_info.gpu_type,
-        price=registration.price_per_hour
+        gpu_type=registration.gpu_info.gpu_type.value,
+        price=float(registration.price_per_hour)
     )
+
+    return {
+        "node_id": node_id,
+        "seller_address": node.seller_address,
+        "gpu_info": {
+            "gpu_type": node.gpu_info.gpu_type.value,
+            "device_name": node.gpu_info.device_name,
+            "vram_gb": float(node.gpu_info.vram_gb) if node.gpu_info.vram_gb else None,
+            "compute_capability": node.gpu_info.compute_capability
+        },
+        "price_per_hour": float(node.price_per_hour),
+        "is_available": node.is_available
+    }
+
+
+@app.get("/api/v1/nodes")
+async def list_nodes(
+    gpu_type: Optional[str] = None,
+    max_price: Optional[float] = None,
+):
+    """
+    Discover available compute nodes
+    Shows only nodes with recent heartbeat (active)
+    """
+    db = get_db_client()
+
+    gpu_type_enum = GPUType(gpu_type) if gpu_type else None
+    max_price_decimal = Decimal(str(max_price)) if max_price else None
+
+    nodes = await db.get_active_nodes(
+        gpu_type=gpu_type_enum,
+        max_price=max_price_decimal
+    )
+
+    logger.info("nodes_listed", count=len(nodes), filters={
+        "gpu_type": gpu_type,
+        "max_price": max_price
+    })
+
+    return {"nodes": nodes, "count": len(nodes)}
+
+
+@app.get("/api/v1/nodes/{node_id}")
+async def get_node(node_id: str):
+    """Get details for a specific node"""
+    db = get_db_client()
+
+    node = await db.get_node(node_id)
+    if not node:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Node {node_id} not found"
+        )
 
     return node
 
 
-@app.get("/api/v1/nodes", response_model=List[ComputeNode])
-async def list_nodes(
-    gpu_type: Optional[GPUType] = None,
-    max_price: Optional[float] = None,
-    status_filter: Optional[NodeStatus] = None
+@app.post("/api/v1/nodes/{node_id}/heartbeat")
+async def node_heartbeat(node_id: str, available: bool = True):
+    """
+    Update node heartbeat and availability
+    Called periodically by Seller Agent (every 30-60 seconds recommended)
+    """
+    db = get_db_client()
+
+    try:
+        await db.update_node_heartbeat(node_id)
+        await db.set_node_availability(node_id, available)
+
+        logger.debug("heartbeat_received", node_id=node_id, available=available)
+
+        return {"status": "ok", "node_id": node_id, "timestamp": datetime.utcnow().isoformat()}
+
+    except Exception as e:
+        logger.error("heartbeat_failed", node_id=node_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update heartbeat: {str(e)}"
+        )
+
+
+@app.post("/api/v1/nodes/{node_id}/unavailable")
+async def mark_node_unavailable(node_id: str):
+    """
+    Mark node as unavailable (busy with job or going offline)
+    Called by Seller Agent before executing job or shutdown
+    """
+    db = get_db_client()
+
+    await db.set_node_availability(node_id, False)
+    logger.info("node_marked_unavailable", node_id=node_id)
+
+    return {"status": "unavailable", "node_id": node_id}
+
+
+# ============================================================================
+# Job Management Endpoints (Queue-Based)
+# ============================================================================
+
+@app.post("/api/v1/jobs/submit", status_code=status.HTTP_201_CREATED)
+async def submit_job(
+    buyer_address: str,
+    script: str,
+    requirements: Optional[str] = None,
+    max_price_per_hour: float = 10.0,
+    timeout_seconds: int = 3600,
+    required_gpu_type: Optional[str] = None,
+    min_vram_gb: Optional[float] = None
 ):
     """
-    Discover available compute nodes
-    Called by Buyer Agent to find suitable hardware
+    Submit a job to the queue
+    Job will be picked up by matching seller nodes
+
+    Queue-based system: Buyer just submits, sellers claim when available
     """
-    nodes = list(nodes_db.values())
+    db = get_db_client()
 
-    # Apply filters
-    if gpu_type:
-        nodes = [n for n in nodes if n.gpu_info.gpu_type == gpu_type]
-
-    if max_price:
-        nodes = [n for n in nodes if n.price_per_hour <= max_price]
-
-    if status_filter:
-        nodes = [n for n in nodes if n.status == status_filter]
-    else:
-        # Default: only show available nodes
-        nodes = [n for n in nodes if n.status == NodeStatus.AVAILABLE]
-
-    # Sort by price (ascending)
-    nodes.sort(key=lambda n: n.price_per_hour)
-
-    logger.info("nodes_listed", count=len(nodes), filters={
-        "gpu_type": gpu_type,
-        "max_price": max_price,
-        "status": status_filter
-    })
-
-    return nodes
-
-
-@app.get("/api/v1/nodes/{node_id}", response_model=ComputeNode)
-async def get_node(node_id: str):
-    """Get details for a specific node"""
-    if node_id not in nodes_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Node {node_id} not found"
-        )
-    return nodes_db[node_id]
-
-
-@app.post("/api/v1/nodes/{node_id}/heartbeat")
-async def node_heartbeat(node_id: str, node_status: NodeStatus):
-    """
-    Update node heartbeat and status
-    Called periodically by Seller Agent
-    """
-    if node_id not in nodes_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Node {node_id} not found"
-        )
-
-    node = nodes_db[node_id]
-    node.last_heartbeat = datetime.utcnow()
-    node.status = node_status
-
-    logger.debug("heartbeat_received", node_id=node_id, status=node_status)
-
-    return {"status": "ok", "node_id": node_id}
-
-
-@app.delete("/api/v1/nodes/{node_id}")
-async def unregister_node(node_id: str):
-    """
-    Unregister a compute node
-    Called by Seller Agent on shutdown
-    """
-    if node_id not in nodes_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Node {node_id} not found"
-        )
-
-    node = nodes_db.pop(node_id)
-    logger.info("node_unregistered", node_id=node_id, seller=node.seller_address)
-
-    return {"status": "unregistered", "node_id": node_id}
-
-
-# ============================================================================
-# Job Management Endpoints
-# ============================================================================
-
-@app.post("/api/v1/jobs/submit", response_model=Job, status_code=status.HTTP_201_CREATED)
-async def submit_job(job_request: JobRequest, node_id: str, buyer_address: str):
-    """
-    Submit a job to a specific node
-    This creates the job record; actual execution happens on the seller node
-    """
-    if node_id not in nodes_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Node {node_id} not found"
-        )
-
-    node = nodes_db[node_id]
-    if node.status != NodeStatus.AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Node {node_id} is not available (status: {node.status})"
-        )
-
-    job_id = f"job_{uuid.uuid4()}"
-
-    job = Job(
-        job_id=job_id,
+    job = ComputeJob(
         buyer_address=buyer_address,
-        node_id=node_id,
-        job_request=job_request,
-        status=JobStatus.PENDING
+        script=script,
+        requirements=requirements,
+        max_price_per_hour=Decimal(str(max_price_per_hour)),
+        timeout_seconds=timeout_seconds,
+        required_gpu_type=GPUType(required_gpu_type) if required_gpu_type else None,
+        min_vram_gb=Decimal(str(min_vram_gb)) if min_vram_gb else None
     )
 
-    jobs_db[job_id] = job
-
-    # Mark node as busy
-    node.status = NodeStatus.BUSY
+    job_id = await db.submit_job(job)
 
     logger.info(
-        "job_submitted",
+        "job_submitted_to_queue",
         job_id=job_id,
         buyer=buyer_address,
-        node_id=node_id,
-        job_type=job_request.job_type
+        max_price=float(max_price_per_hour),
+        gpu_type=required_gpu_type
     )
 
-    return job
+    return {
+        "job_id": job_id,
+        "status": "PENDING",
+        "message": "Job submitted to queue. Sellers will claim when available.",
+        "buyer_address": buyer_address,
+        "max_price_per_hour": max_price_per_hour
+    }
 
 
-@app.get("/api/v1/jobs/{job_id}", response_model=Job)
+@app.post("/api/v1/jobs/claim")
+async def claim_job(
+    node_id: str,
+    seller_address: str,
+    gpu_type: str,
+    price_per_hour: float,
+    vram_gb: float
+):
+    """
+    Claim the next available job from queue (Seller endpoint)
+    Atomically assigns job to seller
+
+    This is called by seller agents polling for work
+    """
+    db = get_db_client()
+
+    try:
+        gpu_type_enum = GPUType(gpu_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid GPU type: {gpu_type}"
+        )
+
+    job = await db.claim_job(
+        node_id=node_id,
+        seller_address=seller_address,
+        gpu_type=gpu_type_enum,
+        price_per_hour=Decimal(str(price_per_hour)),
+        vram_gb=Decimal(str(vram_gb))
+    )
+
+    if not job:
+        return {
+            "claimed": False,
+            "message": "No matching jobs available in queue"
+        }
+
+    logger.info(
+        "job_claimed",
+        job_id=job["job_id"],
+        node_id=node_id,
+        seller=seller_address
+    )
+
+    return {
+        "claimed": True,
+        "job_id": job["job_id"],
+        "script": job["script"],
+        "requirements": job["requirements"],
+        "timeout_seconds": job["timeout_seconds"],
+        "max_price_per_hour": float(job["max_price_per_hour"])
+    }
+
+
+@app.post("/api/v1/jobs/{job_id}/start")
+async def start_job_execution(job_id: str):
+    """
+    Mark job as executing (Seller endpoint)
+    Called when seller actually starts running the job
+    """
+    db = get_db_client()
+
+    try:
+        await db.start_job_execution(job_id)
+
+        logger.info("job_execution_started", job_id=job_id)
+
+        return {
+            "status": "EXECUTING",
+            "job_id": job_id,
+            "started_at": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error("job_start_failed", job_id=job_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start job: {str(e)}"
+        )
+
+
+@app.post("/api/v1/jobs/{job_id}/complete")
+async def complete_job(
+    job_id: str,
+    output: str,
+    exit_code: int,
+    execution_duration: float,
+    total_cost: float,
+    payment_tx_hash: Optional[str] = None
+):
+    """
+    Mark job as completed with results (Seller endpoint)
+    Called when job finishes successfully
+    """
+    db = get_db_client()
+
+    try:
+        await db.complete_job(
+            job_id=job_id,
+            output=output,
+            exit_code=exit_code,
+            execution_duration=Decimal(str(execution_duration)),
+            total_cost=Decimal(str(total_cost)),
+            payment_tx_hash=payment_tx_hash
+        )
+
+        logger.info(
+            "job_completed",
+            job_id=job_id,
+            exit_code=exit_code,
+            duration=execution_duration,
+            cost=total_cost
+        )
+
+        return {
+            "status": "COMPLETED",
+            "job_id": job_id,
+            "exit_code": exit_code,
+            "total_cost": total_cost
+        }
+
+    except Exception as e:
+        logger.error("job_completion_failed", job_id=job_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to complete job: {str(e)}"
+        )
+
+
+@app.post("/api/v1/jobs/{job_id}/fail")
+async def fail_job(
+    job_id: str,
+    error: str,
+    exit_code: Optional[int] = None,
+    execution_duration: Optional[float] = None
+):
+    """
+    Mark job as failed (Seller endpoint)
+    Called when job execution fails
+    """
+    db = get_db_client()
+
+    try:
+        await db.fail_job(
+            job_id=job_id,
+            error=error,
+            exit_code=exit_code,
+            execution_duration=Decimal(str(execution_duration)) if execution_duration else None
+        )
+
+        logger.warning("job_failed", job_id=job_id, error=error[:200])
+
+        return {
+            "status": "FAILED",
+            "job_id": job_id,
+            "error": error
+        }
+
+    except Exception as e:
+        logger.error("job_failure_reporting_failed", job_id=job_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to report job failure: {str(e)}"
+        )
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, buyer_address: str):
+    """
+    Cancel a pending or claimed job (Buyer endpoint)
+    Only works if job hasn't started executing yet
+    """
+    db = get_db_client()
+
+    cancelled = await db.cancel_job(job_id, buyer_address)
+
+    if not cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job cannot be cancelled (not found, wrong buyer, or already executing)"
+        )
+
+    logger.info("job_cancelled", job_id=job_id, buyer=buyer_address)
+
+    return {
+        "status": "CANCELLED",
+        "job_id": job_id
+    }
+
+
+@app.get("/api/v1/jobs/{job_id}")
 async def get_job_status(job_id: str):
     """Get the status and details of a job"""
-    if job_id not in jobs_db:
+    db = get_db_client()
+
+    job = await db.get_job(job_id)
+    if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job {job_id} not found"
         )
-    return jobs_db[job_id]
+
+    return job
 
 
-@app.get("/api/v1/jobs", response_model=List[Job])
-async def list_jobs(buyer_address: Optional[str] = None, node_id: Optional[str] = None):
-    """List all jobs, optionally filtered by buyer or node"""
-    jobs = list(jobs_db.values())
+@app.get("/api/v1/jobs/buyer/{buyer_address}")
+async def list_buyer_jobs(
+    buyer_address: str,
+    status_filter: Optional[str] = None,
+    limit: int = 50
+):
+    """List jobs for a specific buyer"""
+    db = get_db_client()
 
-    if buyer_address:
-        jobs = [j for j in jobs if j.buyer_address == buyer_address]
+    status_enum = JobStatus(status_filter) if status_filter else None
 
-    if node_id:
-        jobs = [j for j in jobs if j.node_id == node_id]
+    jobs = await db.get_jobs_by_buyer(
+        buyer_address=buyer_address,
+        status=status_enum,
+        limit=limit
+    )
 
-    # Sort by creation time (most recent first)
-    jobs.sort(key=lambda j: j.created_at, reverse=True)
+    return {"jobs": jobs, "count": len(jobs)}
 
-    return jobs
+
+@app.get("/api/v1/jobs/seller/{seller_address}")
+async def list_seller_jobs(
+    seller_address: str,
+    status_filter: Optional[str] = None,
+    limit: int = 50
+):
+    """List jobs for a specific seller"""
+    db = get_db_client()
+
+    status_enum = JobStatus(status_filter) if status_filter else None
+
+    jobs = await db.get_jobs_by_seller(
+        seller_address=seller_address,
+        status=status_enum,
+        limit=limit
+    )
+
+    return {"jobs": jobs, "count": len(jobs)}
+
+
+@app.get("/api/v1/jobs/queue/pending")
+async def get_pending_jobs(gpu_type: Optional[str] = None, limit: int = 100):
+    """
+    Get pending jobs in queue (for monitoring/debugging)
+    Sellers should use /api/v1/jobs/claim instead
+    """
+    db = get_db_client()
+
+    gpu_type_enum = GPUType(gpu_type) if gpu_type else None
+
+    jobs = await db.get_pending_jobs(gpu_type=gpu_type_enum, limit=limit)
+
+    return {"jobs": jobs, "count": len(jobs)}
 
 
 # ============================================================================
@@ -317,32 +619,52 @@ async def list_jobs(buyer_address: Optional[str] = None, node_id: Optional[str] 
 
 @app.get("/api/v1/stats")
 async def get_marketplace_stats():
-    """Get marketplace statistics"""
-    total_nodes = len(nodes_db)
-    available_nodes = len([n for n in nodes_db.values() if n.status == NodeStatus.AVAILABLE])
+    """Get comprehensive marketplace statistics"""
+    db = get_db_client()
 
+    # Get queue statistics
+    queue_stats = await db.get_queue_stats()
+    active_sellers = await db.get_active_sellers_view()
+
+    # Group by GPU type
     gpu_types = {}
-    for node in nodes_db.values():
-        gpu_type = node.gpu_info.gpu_type.value
-        gpu_types[gpu_type] = gpu_types.get(gpu_type, 0) + 1
+    for seller in active_sellers:
+        gpu_type = seller["gpu_type"]
+        if gpu_type not in gpu_types:
+            gpu_types[gpu_type] = {
+                "count": 0,
+                "avg_price": 0,
+                "min_price": float('inf'),
+                "max_price": 0
+            }
+        gpu_types[gpu_type]["count"] += 1
+        price = float(seller["price_per_hour"])
+        gpu_types[gpu_type]["min_price"] = min(gpu_types[gpu_type]["min_price"], price)
+        gpu_types[gpu_type]["max_price"] = max(gpu_types[gpu_type]["max_price"], price)
 
-    total_jobs = len(jobs_db)
-    completed_jobs = len([j for j in jobs_db.values() if j.status == JobStatus.COMPLETED])
+    # Calculate average prices
+    for gpu_type in gpu_types:
+        sellers_of_type = [s for s in active_sellers if s["gpu_type"] == gpu_type]
+        if sellers_of_type:
+            gpu_types[gpu_type]["avg_price"] = sum(float(s["price_per_hour"]) for s in sellers_of_type) / len(sellers_of_type)
 
-    total_compute_hours = sum(n.total_compute_hours for n in nodes_db.values())
+    # Build job statistics
+    job_stats = {stat["status"]: stat["job_count"] for stat in queue_stats}
 
     return {
         "nodes": {
-            "total": total_nodes,
-            "available": available_nodes,
+            "total_active": len(active_sellers),
             "by_gpu_type": gpu_types
         },
         "jobs": {
-            "total": total_jobs,
-            "completed": completed_jobs,
-            "active": len([j for j in jobs_db.values() if j.status == JobStatus.RUNNING])
+            "pending": job_stats.get("PENDING", 0),
+            "claimed": job_stats.get("CLAIMED", 0),
+            "executing": job_stats.get("EXECUTING", 0),
+            "completed": job_stats.get("COMPLETED", 0),
+            "failed": job_stats.get("FAILED", 0),
+            "cancelled": job_stats.get("CANCELLED", 0),
+            "total": sum(job_stats.values())
         },
-        "compute_hours": total_compute_hours,
         "timestamp": datetime.utcnow().isoformat()
     }
 

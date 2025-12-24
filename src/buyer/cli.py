@@ -1,18 +1,19 @@
 """
 ComputeSwarm Buyer CLI
-Command-line interface for discovering nodes and submitting jobs
+Queue-based job submission and monitoring
 """
 
 import asyncio
 import sys
-from typing import Optional, List
+from typing import Optional
 import httpx
 import structlog
 from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from src.marketplace.models import ComputeNode, GPUType, JobRequest, Job
+from src.marketplace.models import GPUType
 from src.config import get_buyer_config
 
 logger = structlog.get_logger()
@@ -21,196 +22,337 @@ console = Console()
 
 class BuyerCLI:
     """
-    Buyer CLI for:
-    1. Discovering available compute nodes
-    2. Submitting jobs to nodes
+    Queue-based Buyer CLI for:
+    1. Viewing marketplace statistics
+    2. Submitting jobs to queue
     3. Monitoring job status
-    4. Handling x402 payment flow
+    4. Listing user's jobs
     """
 
     def __init__(self):
         self.config = get_buyer_config()
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=60.0)
 
-    async def discover_nodes(
-        self,
-        gpu_type: Optional[str] = None,
-        max_price: Optional[float] = None
-    ) -> List[ComputeNode]:
-        """Discover available compute nodes"""
+    async def get_marketplace_stats(self):
+        """Get marketplace statistics"""
         try:
-            params = {}
-            if gpu_type:
-                params["gpu_type"] = gpu_type
-            if max_price:
-                params["max_price"] = max_price
-
             response = await self.client.get(
-                f"{self.config.marketplace_url}/api/v1/nodes",
+                f"{self.config.marketplace_url}/api/v1/stats"
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error("stats_fetch_failed", error=str(e))
+            return None
+
+    def display_marketplace_stats(self, stats):
+        """Display marketplace statistics"""
+        if not stats:
+            console.print("[yellow]Failed to fetch marketplace stats[/yellow]")
+            return
+
+        console.print("\n[bold cyan]Marketplace Statistics[/bold cyan]")
+        console.print(f"Active Nodes: {stats['nodes']['total_active']}")
+
+        if stats['nodes']['by_gpu_type']:
+            console.print("\n[bold]GPUs Available:[/bold]")
+            for gpu_type, info in stats['nodes']['by_gpu_type'].items():
+                console.print(
+                    f"  {gpu_type.upper()}: {info['count']} nodes "
+                    f"(${info['min_price']:.2f}-${info['max_price']:.2f}/hr)"
+                )
+
+        console.print(f"\n[bold]Job Queue:[/bold]")
+        console.print(f"  Pending: {stats['jobs']['pending']}")
+        console.print(f"  Executing: {stats['jobs']['executing']}")
+        console.print(f"  Completed: {stats['jobs']['completed']}")
+        console.print(f"  Failed: {stats['jobs']['failed']}")
+
+    async def submit_job(
+        self,
+        script: str,
+        requirements: Optional[str] = None,
+        max_price_per_hour: float = 10.0,
+        timeout_seconds: int = 3600,
+        required_gpu_type: Optional[str] = None,
+        min_vram_gb: Optional[float] = None,
+        wait_for_completion: bool = False
+    ) -> Optional[str]:
+        """
+        Submit a job to the queue
+        Returns job_id if successful
+        """
+        try:
+            params = {
+                "buyer_address": self.config.buyer_address,
+                "script": script,
+                "max_price_per_hour": max_price_per_hour,
+                "timeout_seconds": timeout_seconds
+            }
+
+            if requirements:
+                params["requirements"] = requirements
+            if required_gpu_type:
+                params["required_gpu_type"] = required_gpu_type
+            if min_vram_gb:
+                params["min_vram_gb"] = min_vram_gb
+
+            response = await self.client.post(
+                f"{self.config.marketplace_url}/api/v1/jobs/submit",
                 params=params
             )
             response.raise_for_status()
 
-            nodes = [ComputeNode(**node) for node in response.json()]
+            data = response.json()
+            job_id = data["job_id"]
 
-            logger.info("nodes_discovered", count=len(nodes))
-            return nodes
+            logger.info("job_submitted_to_queue", job_id=job_id)
 
-        except Exception as e:
-            logger.error("node_discovery_failed", error=str(e))
-            return []
+            console.print(f"\n[green]✓ Job submitted to queue[/green]")
+            console.print(f"Job ID: [cyan]{job_id}[/cyan]")
+            console.print(f"Max Price: ${max_price_per_hour}/hr")
+            console.print(f"Status: {data['status']}")
 
-    def display_nodes(self, nodes: List[ComputeNode]):
-        """Display available nodes in a formatted table"""
-        if not nodes:
-            console.print("[yellow]No nodes available[/yellow]")
-            return
+            if wait_for_completion:
+                console.print("\n[yellow]Waiting for job to complete...[/yellow]")
+                await self.wait_for_job(job_id)
 
-        table = Table(title="Available Compute Nodes", show_header=True, header_style="bold magenta")
-
-        table.add_column("Node ID", style="cyan", no_wrap=True)
-        table.add_column("GPU Type", style="green")
-        table.add_column("Device", style="white")
-        table.add_column("VRAM (GB)", justify="right", style="blue")
-        table.add_column("Price/hr (USD)", justify="right", style="yellow")
-        table.add_column("Status", style="green")
-
-        for node in nodes:
-            table.add_row(
-                node.node_id[:20] + "...",
-                node.gpu_info.gpu_type.value.upper(),
-                node.gpu_info.device_name,
-                f"{node.gpu_info.vram_gb:.1f}",
-                f"${node.price_per_hour:.2f}",
-                node.status.value
-            )
-
-        console.print(table)
-
-    async def submit_job(
-        self,
-        node_id: str,
-        script: str,
-        job_type: str = "train",
-        max_duration: int = 3600
-    ) -> Optional[Job]:
-        """Submit a compute job to a specific node"""
-        try:
-            job_request = JobRequest(
-                job_type=job_type,
-                script=script,
-                max_duration_seconds=max_duration
-            )
-
-            response = await self.client.post(
-                f"{self.config.marketplace_url}/api/v1/jobs/submit",
-                params={
-                    "node_id": node_id,
-                    "buyer_address": self.config.buyer_address
-                },
-                json=job_request.model_dump()
-            )
-
-            # Check for x402 Payment Required
-            if response.status_code == 402:
-                console.print("[yellow]Payment required - x402 flow will be implemented in Day 3[/yellow]")
-                # TODO: Handle x402 payment challenge
-                return None
-
-            response.raise_for_status()
-
-            job = Job(**response.json())
-            logger.info("job_submitted", job_id=job.job_id, node_id=node_id)
-
-            console.print(f"[green]Job submitted successfully: {job.job_id}[/green]")
-            return job
+            return job_id
 
         except Exception as e:
             logger.error("job_submission_failed", error=str(e))
-            console.print(f"[red]Job submission failed: {e}[/red]")
+            console.print(f"[red]✗ Job submission failed: {e}[/red]")
             return None
 
-    async def get_job_status(self, job_id: str) -> Optional[Job]:
+    async def get_job_status(self, job_id: str):
         """Get the status of a job"""
         try:
             response = await self.client.get(
                 f"{self.config.marketplace_url}/api/v1/jobs/{job_id}"
             )
             response.raise_for_status()
-
-            job = Job(**response.json())
-            return job
+            return response.json()
 
         except Exception as e:
             logger.error("get_job_status_failed", error=str(e), job_id=job_id)
             return None
 
-    def display_job_status(self, job: Job):
+    def display_job_status(self, job):
         """Display job status in a formatted way"""
-        console.print("\n[bold]Job Status[/bold]")
-        console.print(f"Job ID: {job.job_id}")
-        console.print(f"Status: [{'green' if job.status.value == 'completed' else 'yellow'}]{job.status.value}[/]")
-        console.print(f"Node: {job.node_id}")
-        console.print(f"Buyer: {job.buyer_address}")
-        console.print(f"Created: {job.created_at}")
+        if not job:
+            console.print("[yellow]Job not found[/yellow]")
+            return
 
-        if job.started_at:
-            console.print(f"Started: {job.started_at}")
-        if job.completed_at:
-            console.print(f"Completed: {job.completed_at}")
-        if job.total_cost_usd:
-            console.print(f"Total Cost: ${job.total_cost_usd:.4f}")
-        if job.output:
-            console.print(f"\n[bold]Output:[/bold]\n{job.output}")
-        if job.error:
-            console.print(f"\n[bold red]Error:[/bold red]\n{job.error}")
+        status = job["status"]
+        status_colors = {
+            "PENDING": "yellow",
+            "CLAIMED": "blue",
+            "EXECUTING": "cyan",
+            "COMPLETED": "green",
+            "FAILED": "red",
+            "CANCELLED": "magenta"
+        }
+
+        console.print("\n[bold]Job Details[/bold]")
+        console.print(f"Job ID: [cyan]{job['job_id']}[/cyan]")
+        console.print(f"Status: [{status_colors.get(status, 'white')}]{status}[/]")
+        console.print(f"Buyer: {job['buyer_address']}")
+        console.print(f"Max Price: ${job['max_price_per_hour']}/hr")
+        console.print(f"Timeout: {job['timeout_seconds']}s")
+
+        if job.get("seller_address"):
+            console.print(f"Seller: {job['seller_address']}")
+            console.print(f"Node: {job['node_id']}")
+
+        if job.get("created_at"):
+            console.print(f"Created: {job['created_at']}")
+        if job.get("claimed_at"):
+            console.print(f"Claimed: {job['claimed_at']}")
+        if job.get("started_at"):
+            console.print(f"Started: {job['started_at']}")
+        if job.get("completed_at"):
+            console.print(f"Completed: {job['completed_at']}")
+
+        if job.get("execution_duration_seconds"):
+            console.print(f"Duration: {job['execution_duration_seconds']:.2f}s")
+        if job.get("total_cost_usd"):
+            console.print(f"Total Cost: [yellow]${job['total_cost_usd']:.4f}[/yellow]")
+
+        if job.get("result_output"):
+            console.print(f"\n[bold green]Output:[/bold green]")
+            console.print(job["result_output"])
+
+        if job.get("result_error"):
+            console.print(f"\n[bold red]Error:[/bold red]")
+            console.print(job["result_error"])
+
+    async def wait_for_job(self, job_id: str, poll_interval: int = 2):
+        """Wait for job to complete, showing progress"""
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Waiting for job...", total=None)
+
+            while True:
+                job = await self.get_job_status(job_id)
+
+                if not job:
+                    console.print("[red]Failed to fetch job status[/red]")
+                    return
+
+                status = job["status"]
+                progress.update(task, description=f"Status: {status}")
+
+                if status in ["COMPLETED", "FAILED", "CANCELLED"]:
+                    break
+
+                await asyncio.sleep(poll_interval)
+
+        # Display final results
+        self.display_job_status(job)
+
+    async def list_my_jobs(self, status_filter: Optional[str] = None, limit: int = 10):
+        """List jobs submitted by this buyer"""
+        try:
+            url = f"{self.config.marketplace_url}/api/v1/jobs/buyer/{self.config.buyer_address}"
+            params = {"limit": limit}
+            if status_filter:
+                params["status_filter"] = status_filter
+
+            response = await self.client.get(url, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+            jobs = data["jobs"]
+
+            if not jobs:
+                console.print("[yellow]No jobs found[/yellow]")
+                return
+
+            table = Table(title=f"My Jobs ({data['count']} total)", show_header=True, header_style="bold magenta")
+
+            table.add_column("Job ID", style="cyan", no_wrap=True)
+            table.add_column("Status", style="white")
+            table.add_column("Created", style="blue")
+            table.add_column("Duration (s)", justify="right", style="green")
+            table.add_column("Cost (USD)", justify="right", style="yellow")
+
+            for job in jobs:
+                job_id_short = job["job_id"][:13] + "..."
+                status = job["status"]
+                created = job["created_at"][:19] if job.get("created_at") else "N/A"
+                duration = f"{job['execution_duration_seconds']:.1f}" if job.get("execution_duration_seconds") else "-"
+                cost = f"${job['total_cost_usd']:.4f}" if job.get("total_cost_usd") else "-"
+
+                table.add_row(job_id_short, status, created, duration, cost)
+
+            console.print(table)
+
+        except Exception as e:
+            logger.error("list_jobs_failed", error=str(e))
+            console.print(f"[red]Failed to list jobs: {e}[/red]")
+
+    async def cancel_job(self, job_id: str):
+        """Cancel a pending/claimed job"""
+        try:
+            response = await self.client.post(
+                f"{self.config.marketplace_url}/api/v1/jobs/{job_id}/cancel",
+                params={"buyer_address": self.config.buyer_address}
+            )
+            response.raise_for_status()
+
+            console.print(f"[green]✓ Job {job_id} cancelled[/green]")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                console.print(f"[red]Cannot cancel job (not found, wrong buyer, or already executing)[/red]")
+            else:
+                console.print(f"[red]Failed to cancel job: {e}[/red]")
+            return False
 
     async def interactive_mode(self):
         """Run interactive CLI mode"""
-        console.print("[bold cyan]ComputeSwarm Buyer CLI[/bold cyan]")
-        console.print("Commands: discover, submit, status, quit\n")
+        console.print("[bold cyan]ComputeSwarm Buyer CLI (Queue-Based)[/bold cyan]")
+        console.print("Commands: stats, submit, status, list, cancel, wait, quit\n")
 
         while True:
             try:
                 command = console.input("[bold green]>[/bold green] ").strip().lower()
 
-                if command == "quit" or command == "exit":
+                if command in ["quit", "exit", "q"]:
                     break
 
-                elif command == "discover":
-                    gpu_filter = console.input("GPU type filter (cuda/mps/all): ").strip().lower()
-                    gpu_type = None if gpu_filter == "all" else gpu_filter
-
-                    nodes = await self.discover_nodes(gpu_type=gpu_type)
-                    self.display_nodes(nodes)
+                elif command == "stats":
+                    stats = await self.get_marketplace_stats()
+                    self.display_marketplace_stats(stats)
 
                 elif command == "submit":
-                    node_id = console.input("Node ID: ").strip()
                     script_path = console.input("Path to Python script: ").strip()
 
                     try:
                         with open(script_path, "r") as f:
                             script = f.read()
 
-                        job = await self.submit_job(node_id, script)
-                        if job:
-                            self.display_job_status(job)
+                        max_price = float(console.input("Max price per hour (USD) [10.0]: ").strip() or "10.0")
+                        timeout = int(console.input("Timeout (seconds) [3600]: ").strip() or "3600")
+                        gpu_type = console.input("Required GPU type (cuda/mps/none) [none]: ").strip().lower()
+                        gpu_type = gpu_type if gpu_type in ["cuda", "mps"] else None
+
+                        wait = console.input("Wait for completion? (y/n) [n]: ").strip().lower() == "y"
+
+                        await self.submit_job(
+                            script=script,
+                            max_price_per_hour=max_price,
+                            timeout_seconds=timeout,
+                            required_gpu_type=gpu_type,
+                            wait_for_completion=wait
+                        )
+
                     except FileNotFoundError:
                         console.print(f"[red]Script not found: {script_path}[/red]")
+                    except ValueError as e:
+                        console.print(f"[red]Invalid input: {e}[/red]")
 
                 elif command == "status":
                     job_id = console.input("Job ID: ").strip()
                     job = await self.get_job_status(job_id)
-                    if job:
-                        self.display_job_status(job)
+                    self.display_job_status(job)
+
+                elif command == "list":
+                    status_filter = console.input("Status filter (PENDING/EXECUTING/COMPLETED/all) [all]: ").strip().upper()
+                    status_filter = status_filter if status_filter != "ALL" else None
+                    await self.list_my_jobs(status_filter=status_filter)
+
+                elif command == "cancel":
+                    job_id = console.input("Job ID to cancel: ").strip()
+                    await self.cancel_job(job_id)
+
+                elif command == "wait":
+                    job_id = console.input("Job ID to wait for: ").strip()
+                    await self.wait_for_job(job_id)
+
+                elif command == "help":
+                    console.print("\n[bold]Available Commands:[/bold]")
+                    console.print("  stats  - Show marketplace statistics")
+                    console.print("  submit - Submit a new job to queue")
+                    console.print("  status - Get status of a specific job")
+                    console.print("  list   - List your jobs")
+                    console.print("  cancel - Cancel a pending/claimed job")
+                    console.print("  wait   - Wait for job completion")
+                    console.print("  quit   - Exit CLI\n")
 
                 else:
-                    console.print(f"[yellow]Unknown command: {command}[/yellow]")
+                    console.print(f"[yellow]Unknown command: {command}. Type 'help' for commands.[/yellow]")
 
             except KeyboardInterrupt:
                 console.print("\n[yellow]Use 'quit' to exit[/yellow]")
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
+                logger.error("cli_error", error=str(e))
 
         await self.client.aclose()
 
@@ -236,19 +378,33 @@ async def main():
         # Command-line mode
         command = sys.argv[1]
 
-        if command == "discover":
-            nodes = await cli.discover_nodes()
-            cli.display_nodes(nodes)
+        if command == "stats":
+            stats = await cli.get_marketplace_stats()
+            cli.display_marketplace_stats(stats)
 
         elif command == "status" and len(sys.argv) > 2:
             job_id = sys.argv[2]
             job = await cli.get_job_status(job_id)
-            if job:
-                cli.display_job_status(job)
+            cli.display_job_status(job)
+
+        elif command == "list":
+            await cli.list_my_jobs()
+
+        elif command == "submit" and len(sys.argv) > 2:
+            script_path = sys.argv[2]
+            try:
+                with open(script_path, "r") as f:
+                    script = f.read()
+
+                wait = "--wait" in sys.argv
+
+                await cli.submit_job(script=script, wait_for_completion=wait)
+            except FileNotFoundError:
+                console.print(f"[red]Script not found: {script_path}[/red]")
 
         else:
             console.print("[red]Invalid command[/red]")
-            console.print("Usage: python -m src.buyer.cli [discover|status <job_id>]")
+            console.print("Usage: python -m src.buyer.cli [stats|status <job_id>|list|submit <script_path> [--wait]]")
 
     else:
         # Interactive mode
