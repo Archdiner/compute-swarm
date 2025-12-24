@@ -1,0 +1,36 @@
+# ===== PRODUCTION DEPENDENCIES =====
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+gunicorn==21.2.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Database & Caching (Cloud Services)
+supabase==2.3.4
+upstash-redis==0.15.0
+
+# HTTP Client
+httpx==0.26.0
+
+# GPU Compute
+torch==2.1.2
+torchvision==0.16.2
+
+# Blockchain & Payments
+web3==6.15.0
+eth-account==0.10.0
+x402>=0.2.1
+
+# Logging
+structlog==24.1.0
+
+# Configuration
+python-dotenv==1.0.0
+
+# CLI
+rich==13.7.0
+
+# Performance
+uvloop==0.19.0

@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  marketplace:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Use Supabase cloud (no local DB needed)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Use Upstash cloud (no local Redis needed)
+      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
+      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
+
+      # Blockchain
+      - NETWORK=base-sepolia
+      - SELLER_PRIVATE_KEY=${SELLER_PRIVATE_KEY}
+      - BUYER_PRIVATE_KEY=${BUYER_PRIVATE_KEY}
+    env_file:
+      - .env
+    restart: unless-stopped
+
+# Note: No database or redis containers needed!
+# Using Supabase (cloud PostgreSQL) and Upstash (cloud Redis)
+# This makes deployment simpler and uses free tiers
