@@ -31,10 +31,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/health')"
 
-# Run with Gunicorn + Uvicorn workers
-CMD ["gunicorn", "src.marketplace.server:app", \
-     "--workers", "4", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# Run with Gunicorn + Uvicorn workers (configurable via env)
+CMD ["/bin/sh", "-c", "exec gunicorn src.marketplace.server:app \
+     --workers ${MARKETPLACE_WORKERS:-4} \
+     --worker-class uvicorn.workers.UvicornWorker \
+     --bind 0.0.0.0:8000 \
+     --access-logfile - \
+     --error-logfile -"]

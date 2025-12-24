@@ -26,6 +26,9 @@ htmlcov/
 
 # Documentation
 docs/
+README.md
+TECH_STACK.md
+FREE_TIER_SETUP.md
 *.md
 
 # Examples

@@ -4,7 +4,7 @@ Uses pydantic-settings for type-safe environment variable loading
 """
 
 from typing import Literal
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,10 +40,11 @@ class MarketplaceConfig(BaseSettings):
     payment_challenge_timeout: int = Field(default=300, description="Timeout in seconds")
     payment_verification_retries: int = Field(default=3)
 
-    # Security
-    api_key_header: str = Field(default="X-API-Key")
-    enable_rate_limiting: bool = Field(default=True)
-    max_requests_per_minute: int = Field(default=60)
+    # CORS Configuration
+    cors_origins: list[str] = Field(
+        default=["http://localhost:3000"],
+        description="Allowed CORS origins"
+    )
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
@@ -92,7 +93,8 @@ class SellerConfig(BaseSettings):
     rpc_url: str = Field(default="https://sepolia.base.org")
     usdc_contract_address: str = Field(default="0x036CbD53842c5426634e7929541eC2318f3dCF7e")
 
-    @validator("seller_private_key")
+    @field_validator("seller_private_key")
+    @classmethod
     def validate_private_key(cls, v):
         if v and not v.startswith("0x"):
             return f"0x{v}"
@@ -125,7 +127,8 @@ class BuyerConfig(BaseSettings):
     rpc_url: str = Field(default="https://sepolia.base.org")
     usdc_contract_address: str = Field(default="0x036CbD53842c5426634e7929541eC2318f3dCF7e")
 
-    @validator("buyer_private_key")
+    @field_validator("buyer_private_key")
+    @classmethod
     def validate_private_key(cls, v):
         if v and not v.startswith("0x"):
             return f"0x{v}"

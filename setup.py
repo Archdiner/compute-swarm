@@ -39,12 +39,14 @@ setup(
         "structlog>=24.1.0",
         "python-dotenv>=1.0.0",
         "rich>=13.7.0",
+        "supabase>=2.3.4",
+        "upstash-redis>=0.15.0",
+        "x402>=0.2.1",
     ],
-    entry_points={
-        "console_scripts": [
-            "computeswarm-marketplace=src.marketplace.server:main",
-            "computeswarm-seller=src.seller.agent:main",
-            "computeswarm-buyer=src.buyer.cli:main",
-        ],
-    },
+    # Note: Removed entry_points for console_scripts
+    # These don't work well with async functions
+    # Use scripts/start_*.sh instead or run directly:
+    #   python -m src.marketplace.server
+    #   python -m src.seller.agent
+    #   python -m src.buyer.cli
 )
