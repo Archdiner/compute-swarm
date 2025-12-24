@@ -1,159 +1,61 @@
-# ComputeSwarm 🐝
+# ComputeSwarm
 
-**Decentralized P2P GPU Marketplace for the Agentic Economy**
+Decentralized P2P GPU marketplace using [x402 protocol](https://x402.org) for per-second USDC payments.
 
-ComputeSwarm is a peer-to-peer marketplace that enables individual laptop owners to monetize idle GPU compute. Built on the x402 protocol—a modern standard launched by Coinbase and Cloudflare in 2025—it enables native machine-to-machine payments over HTTP with per-second USDC settlement.
+## Features
 
-## 🎯 The Unfair Advantage
+- **x402 Payments**: HTTP 402-based USDC micropayments on Base L2
+- **Multi-GPU Support**: NVIDIA CUDA + Apple Silicon MPS
+- **Per-Second Pricing**: Pay only for compute time used
+- **Production-Ready**: PostgreSQL, Redis, comprehensive tests
 
-- **Per-Second Settlement**: Pay for exactly 42 seconds if you need 42 seconds. No subscriptions, no minimum spend.
-- **Heterogeneous Support**: First-class support for both NVIDIA CUDA and Apple Silicon MPS, unlocking millions of M-series MacBooks.
-- **Zero-Friction Access**: No API keys, no manual account setup. Just HTTP + x402 payment protocol.
+## Architecture
 
-## 🏗️ Architecture
+**Marketplace** (FastAPI): Node discovery, x402 manifest, job registry
+**Seller Agent** (Python): GPU detection, job execution, payment verification
+**Buyer CLI** (Python): Node discovery, job submission, automated payments
 
-```
-┌─────────────────┐
-│  Marketplace    │  ← Discovery Layer (FastAPI)
-│  (FastAPI)      │     - x402.json manifest
-│                 │     - Node registry
-└────────┬────────┘     - Job tracking
-         │
-    ┌────┴────┐
-    │         │
-┌───▼──┐  ┌──▼───┐
-│Seller│  │Buyer │
-│Agent │  │ CLI  │
-└──────┘  └──────┘
-    │         │
-    │    ┌────┴─────┐
-    │    │  x402    │
-    └───►│ Protocol │
-         │  USDC    │
-         └──────────┘
-```
+**Tech Stack**: FastAPI, PostgreSQL, Redis, x402 SDK, Web3.py, PyTorch
 
-### Components
+See [TECH_STACK.md](TECH_STACK.md) for details.
 
-1. **Marketplace Server** (`src/marketplace/`)
-   - FastAPI-based discovery layer
-   - Tracks active GPU nodes
-   - Exposes x402.json manifest
-   - Manages job registry
-
-2. **Seller Agent** (`src/seller/`)
-   - Detects local GPU (CUDA/MPS)
-   - Registers with marketplace
-   - Executes compute jobs
-   - Handles payment verification
-
-3. **Buyer CLI** (`src/buyer/`)
-   - Discovers available nodes
-   - Submits compute jobs
-   - Handles x402 payment flow
-   - Monitors job status
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- PyTorch 2.1+ (with CUDA or MPS support)
-- Base Sepolia testnet wallet with USDC
-
-### Installation
+## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/compute-swarm.git
-cd compute-swarm
+# Setup
+make install
+cp .env.example .env  # Add your wallet keys
 
-# Run setup script
-./scripts/setup_dev.sh
+# Run tests
+make test
 
-# Activate virtual environment
-source venv/bin/activate
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your wallet addresses
+# Start services
+make run-marketplace  # Terminal 1
+make run-seller       # Terminal 2
+make run-buyer        # Terminal 3
 ```
 
-### Configuration
-
-Edit `.env` with your settings:
+## Development
 
 ```bash
-# Wallet Configuration
-SELLER_PRIVATE_KEY=your_seller_private_key
-SELLER_ADDRESS=your_seller_address
-BUYER_PRIVATE_KEY=your_buyer_private_key
-BUYER_ADDRESS=your_buyer_address
+make test              # Run all tests
+make test-cov          # Run tests with coverage
+make lint              # Run linters
+make format            # Format code
+make clean             # Clean build artifacts
+```
 
-# Network (Base Sepolia for testing)
+## Configuration
+
+Edit `.env`:
+
+```bash
+SELLER_PRIVATE_KEY=0x...
+BUYER_PRIVATE_KEY=0x...
 NETWORK=base-sepolia
-RPC_URL=https://sepolia.base.org
-USDC_CONTRACT_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
-
-# Pricing (USD per hour)
-DEFAULT_PRICE_PER_HOUR_MPS=0.50
-DEFAULT_PRICE_PER_HOUR_CUDA=2.00
 ```
 
-### Running the System
-
-#### 1. Start the Marketplace
-
-```bash
-./scripts/start_marketplace.sh
-```
-
-The marketplace will be available at `http://localhost:8000`
-
-Access the x402 manifest at: `http://localhost:8000/x402.json`
-
-#### 2. Test GPU Detection
-
-```bash
-./scripts/test_gpu.sh
-```
-
-This will detect your GPU and run a simple test.
-
-#### 3. Start a Seller Agent (on GPU machine)
-
-```bash
-./scripts/start_seller.sh
-```
-
-The seller will:
-- Detect your GPU
-- Register with the marketplace
-- Send periodic heartbeats
-- Wait for compute jobs
-
-#### 4. Use the Buyer CLI
-
-```bash
-# Interactive mode
-./scripts/start_buyer.sh
-
-# Or command-line mode
-./scripts/start_buyer.sh discover
-```
-
-Example interactive session:
-```
-> discover
-# Shows table of available nodes
-
-> submit
-Node ID: node_abc123...
-Path to Python script: examples/test_job.py
-# Submits job and shows status
-```
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 compute-swarm/
@@ -182,104 +84,31 @@ compute-swarm/
 └── README.md
 ```
 
-## 🛠️ Development Roadmap
+## Testing
 
-### ✅ Phase 1: Core Protocol (Days 1-4) - IN PROGRESS
-
-- [x] **Day 1**: Project foundation
-  - [x] FastAPI marketplace server
-  - [x] x402.json manifest
-  - [x] GPU detection (CUDA/MPS)
-  - [x] Seller/Buyer scaffolds
-  - [x] Configuration system
-
-- [ ] **Day 2**: MPS Seller Agent
-  - [ ] Local job execution engine
-  - [ ] Job isolation and security
-  - [ ] Result streaming
-
-- [ ] **Day 3**: x402 Payment Integration
-  - [ ] Payment challenge generation
-  - [ ] USDC payment verification
-  - [ ] Per-second metering
-
-- [ ] **Day 4**: Local Testing
-  - [ ] End-to-end payment flow
-  - [ ] Job execution on M4 MacBook
-
-### Phase 2: Heterogeneous Expansion (Days 5-9)
-
-- [ ] **Day 5**: Abstract Compute Engine
-- [ ] **Day 6**: External NVIDIA GPU testing
-- [ ] **Day 7**: Cross-network job submission
-- [ ] **Day 8-9**: Job status streaming
-
-### Phase 3: Demo Polish (Days 10-14)
-
-- [ ] **Day 10**: React Dashboard
-- [ ] **Day 11**: Performance Benchmarks
-- [ ] **Day 12-13**: Pitch Preparation
-- [ ] **Day 14**: Final Testing
-
-## 🧪 Testing
+See `pytest.ini` for configuration. Tests use Factory Boy for fixtures and pytest-asyncio for async support.
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=src tests/
-
-# Test GPU detection
-python -m src.compute.gpu_detector
+make test              # All tests
+make test-unit         # Unit tests only
+make test-cov          # With coverage report
 ```
 
-## 📚 API Documentation
+## Deployment
 
-Once the marketplace is running, visit:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- x402 Manifest: `http://localhost:8000/x402.json`
+```bash
+docker-compose up      # Local with PostgreSQL + Redis
+```
 
-## 🔐 Security Considerations
+See `Dockerfile` and `docker-compose.yml` for production deployment.
 
-**⚠️ This is a development preview. DO NOT use in production without:**
+## Documentation
 
-1. Proper wallet security (hardware wallets, key management)
-2. Job sandboxing and resource limits
-3. Rate limiting and DDoS protection
-4. Smart contract audits
-5. Network security (TLS, authentication)
+- **API Docs**: `http://localhost:8000/docs` (Swagger UI)
+- **Tech Stack**: [TECH_STACK.md](TECH_STACK.md)
+- **Architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **x402 Integration**: [docs/X402_IMPLEMENTATION_REVIEW.md](docs/X402_IMPLEMENTATION_REVIEW.md)
 
-## 📖 Learn More
+## License
 
-- [x402 Protocol Specification](https://x402.org)
-- [Coinbase Developer Platform](https://developers.coinbase.com)
-- [Base Network Documentation](https://docs.base.org)
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## 📄 License
-
-MIT License - see LICENSE file for details
-
-## 🙏 Acknowledgments
-
-- x402 Protocol: Coinbase & Cloudflare
-- Base Network: Coinbase
-- FastAPI Framework
-- PyTorch Team
-
----
-
-**Built for the Agentic Economy** 🤖💰
-
-*ComputeSwarm enables AI agents to programmatically discover, pay for, and consume GPU compute without human intervention.*
+MIT
