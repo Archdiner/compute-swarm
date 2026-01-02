@@ -1,0 +1,51 @@
+# Sandbox Docker image for ComputeSwarm job execution
+# Provides isolated Python environment with common ML libraries
+
+FROM python:3.11-slim
+
+# Security: Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash sandbox
+
+# Install system dependencies for ML libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install common ML/scientific packages
+# These are pre-installed to speed up job execution
+RUN pip install --no-cache-dir \
+    numpy>=1.24.0 \
+    scipy>=1.11.0 \
+    pandas>=2.0.0 \
+    scikit-learn>=1.3.0 \
+    matplotlib>=3.7.0 \
+    pillow>=10.0.0 \
+    requests>=2.31.0
+
+# Install PyTorch CPU-only (lighter weight for sandbox)
+# GPU jobs should use nvidia-docker with CUDA image
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+    torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Set ownership to sandbox user
+RUN chown -R sandbox:sandbox /workspace
+
+# Switch to non-root user
+USER sandbox
+
+# Default command - will be overridden by job execution
+CMD ["python3", "--version"]
+
+# Labels
+LABEL org.opencontainers.image.title="ComputeSwarm Sandbox"
+LABEL org.opencontainers.image.description="Isolated Python execution environment for ComputeSwarm jobs"
+LABEL org.opencontainers.image.version="1.0.0"
+
