@@ -23,6 +23,14 @@
 
 All services free tier compatible. See [FREE_TIER_SETUP.md](FREE_TIER_SETUP.md).
 
+## 🚀 Getting Started
+
+**New to the project?** See [SETUP_GUIDE.md](SETUP_GUIDE.md) for complete step-by-step instructions including:
+- All accounts you need to create (Supabase, Upstash, Base Sepolia)
+- API keys and credentials to obtain
+- Software to download
+- Complete setup walkthrough
+
 ## Quick Start
 
 ```bash

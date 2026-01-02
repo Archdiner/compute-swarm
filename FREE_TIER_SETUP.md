@@ -44,11 +44,13 @@ This guide shows how to set up all free-tier services for ComputeSwarm.
 
 ---
 
-## 2. Upstash Redis (Caching) - FREE
+## 2. Upstash Redis (Caching) - OPTIONAL
+
+**Note**: Redis is not currently used in the codebase. The app works entirely with Supabase (PostgreSQL). You can skip this for MVP.
 
 **Free Tier**: 10,000 commands/day
 
-### Setup
+### Setup (Optional)
 
 1. Go to [upstash.com](https://upstash.com)
 2. Sign up with GitHub
@@ -185,7 +187,7 @@ Just push to GitHub and tests run automatically.
 | Service | Free Tier | Setup Time | Required? |
 |---------|-----------|------------|-----------|
 | Supabase | 500MB DB | 5 min | ✅ Yes |
-| Upstash | 10K cmds/day | 2 min | ✅ Yes |
+| Upstash | 10K cmds/day | 2 min | ❌ Optional (not used yet) |
 | Base Sepolia | Unlimited | 5 min | ✅ Yes |
 | Render | 750 hrs/mo | 10 min | ⚠️ Dev only |
 | GitHub Actions | 2K min/mo | 0 min | ✅ Yes |
