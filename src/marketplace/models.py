@@ -13,6 +13,7 @@ class GPUType(str, Enum):
     CUDA = "cuda"
     MPS = "mps"  # Apple Silicon Metal Performance Shaders
     ROCM = "rocm"  # AMD ROCm (future support)
+    CPU = "cpu"  # CPU-only fallback
     UNKNOWN = "unknown"
 
 
