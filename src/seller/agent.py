@@ -1,6 +1,6 @@
 """
 ComputeSwarm Seller Agent
-Queue-based job polling, claiming, and execution
+Queue-based job polling, claiming, and execution with x402 payments
 """
 
 import asyncio
@@ -16,6 +16,7 @@ from src.compute.gpu_detector import GPUDetector
 from src.marketplace.models import NodeRegistration, GPUType
 from src.config import get_seller_config
 from src.execution import JobExecutor
+from src.payments import PaymentProcessor, calculate_job_cost, calculate_estimated_cost
 
 logger = structlog.get_logger()
 
@@ -28,7 +29,7 @@ class SellerAgent:
     3. Polls job queue for matching jobs
     4. Claims jobs atomically
     5. Executes jobs with safety controls
-    6. Reports results and handles payment
+    6. Processes payments and reports results
     """
 
     def __init__(self):
@@ -39,7 +40,32 @@ class SellerAgent:
         self.running = False
         self.is_busy = False
         self.client = httpx.AsyncClient(timeout=30.0)
-        self.executor = JobExecutor()
+        
+        # Initialize job executor with Docker sandboxing config
+        self.executor = JobExecutor(
+            docker_enabled=self.config.docker_enabled,
+            docker_image=self.config.docker_image,
+            docker_memory_limit=self.config.docker_memory_limit,
+            docker_cpu_limit=self.config.docker_cpu_limit,
+            docker_pids_limit=self.config.docker_pids_limit,
+            docker_tmpfs_size=self.config.docker_tmpfs_size
+        )
+        
+        # Initialize payment processor if private key is available
+        self.payment_processor: Optional[PaymentProcessor] = None
+        if self.config.seller_private_key:
+            self.payment_processor = PaymentProcessor(
+                private_key=self.config.seller_private_key,
+                rpc_url=self.config.rpc_url,
+                usdc_address=self.config.usdc_contract_address,
+                network=self.config.network,
+                testnet_mode=self.config.testnet_mode,
+            )
+            logger.info(
+                "payment_processor_initialized", 
+                address=self.payment_processor.address,
+                testnet_mode=self.config.testnet_mode
+            )
 
     async def start(self):
         """Start the seller agent"""
@@ -61,9 +87,9 @@ class SellerAgent:
 
         # Determine pricing based on GPU type
         if self.gpu_info.gpu_type.value == "cuda":
-            self.price_per_hour = self.config.default_price_per_hour_cuda
+            self.price_per_hour = Decimal(str(self.config.default_price_per_hour_cuda))
         elif self.gpu_info.gpu_type.value == "mps":
-            self.price_per_hour = self.config.default_price_per_hour_mps
+            self.price_per_hour = Decimal(str(self.config.default_price_per_hour_mps))
         else:
             self.price_per_hour = Decimal("0.10")  # Default low price for CPU
 
@@ -174,12 +200,14 @@ class SellerAgent:
                 requirements = data.get("requirements")
                 timeout_seconds = data["timeout_seconds"]
                 max_price_per_hour = Decimal(str(data["max_price_per_hour"]))
+                buyer_address = data.get("buyer_address", "")
 
                 logger.info(
                     "job_claimed_from_queue",
                     job_id=job_id,
                     timeout=timeout_seconds,
-                    max_price=float(max_price_per_hour)
+                    max_price=float(max_price_per_hour),
+                    buyer=buyer_address
                 )
 
                 # Execute job in background
@@ -188,7 +216,8 @@ class SellerAgent:
                     script=script,
                     requirements=requirements,
                     timeout_seconds=timeout_seconds,
-                    max_price_per_hour=max_price_per_hour
+                    max_price_per_hour=max_price_per_hour,
+                    buyer_address=buyer_address
                 ))
 
         except Exception as e:
@@ -200,12 +229,52 @@ class SellerAgent:
         script: str,
         requirements: Optional[str],
         timeout_seconds: int,
-        max_price_per_hour: Decimal
+        max_price_per_hour: Decimal,
+        buyer_address: str = ""
     ):
-        """Execute a claimed job"""
+        """Execute a claimed job with payment processing"""
         self.is_busy = True
 
         try:
+            # Pre-authorization: Check buyer can pay estimated cost BEFORE execution
+            if self.payment_processor and buyer_address:
+                estimated_cost = calculate_estimated_cost(
+                    timeout_seconds=timeout_seconds,
+                    price_per_hour=self.price_per_hour
+                )
+                
+                try:
+                    buyer_balance = self.payment_processor.get_usdc_balance(buyer_address)
+                    
+                    if buyer_balance < estimated_cost:
+                        logger.warning(
+                            "insufficient_buyer_balance",
+                            job_id=job_id,
+                            buyer=buyer_address,
+                            balance=float(buyer_balance),
+                            required=float(estimated_cost)
+                        )
+                        await self.fail_job(
+                            job_id=job_id,
+                            error=f"Insufficient USDC balance: {buyer_balance:.6f} < {estimated_cost:.6f} required"
+                        )
+                        return
+                    
+                    logger.info(
+                        "pre_authorization_passed",
+                        job_id=job_id,
+                        buyer=buyer_address,
+                        balance=float(buyer_balance),
+                        estimated_cost=float(estimated_cost)
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "pre_authorization_check_failed",
+                        job_id=job_id,
+                        error=str(e)
+                    )
+                    # Continue execution if balance check fails - will catch at settlement
+
             # Notify marketplace that execution is starting
             await self.client.post(
                 f"{self.config.marketplace_url}/api/v1/jobs/{job_id}/start"
@@ -221,17 +290,20 @@ class SellerAgent:
                 timeout_seconds=timeout_seconds
             )
 
-            # Calculate cost
-            hours = result.execution_time / Decimal("3600")  # Convert seconds to hours
-            total_cost = hours * self.price_per_hour
+            # Calculate cost using per-second billing
+            cost_usd, cost_usdc_wei = calculate_job_cost(
+                execution_time_seconds=result.execution_time,
+                price_per_hour=self.price_per_hour
+            )
 
             logger.info(
                 "job_execution_finished",
                 job_id=job_id,
                 success=result.success,
                 exit_code=result.exit_code,
-                duration=float(result.execution_time),
-                cost=float(total_cost)
+                duration_seconds=float(result.execution_time),
+                cost_usd=float(cost_usd),
+                cost_usdc_wei=cost_usdc_wei
             )
 
             # Report results
@@ -241,7 +313,9 @@ class SellerAgent:
                     output=result.output,
                     exit_code=result.exit_code,
                     execution_duration=result.execution_time,
-                    total_cost=total_cost
+                    total_cost=cost_usd,
+                    cost_usdc_wei=cost_usdc_wei,
+                    buyer_address=buyer_address
                 )
             else:
                 await self.fail_job(
@@ -267,12 +341,64 @@ class SellerAgent:
         output: str,
         exit_code: int,
         execution_duration: Decimal,
-        total_cost: Decimal
+        total_cost: Decimal,
+        cost_usdc_wei: int = 0,
+        buyer_address: str = ""
     ):
-        """Report job completion to marketplace"""
+        """Report job completion to marketplace with payment settlement"""
+        payment_tx_hash = None
+        payment_status = "success"
+        
         try:
-            # TODO: Implement x402 payment verification and get tx hash
-            payment_tx_hash = None
+            # Process payment if payment processor is available
+            if self.payment_processor and buyer_address and cost_usdc_wei > 0:
+                # Re-check buyer balance before settlement (edge case: buyer spent during execution)
+                try:
+                    cost_usdc = Decimal(cost_usdc_wei) / Decimal(10**6)
+                    buyer_balance = self.payment_processor.get_usdc_balance(buyer_address)
+                    
+                    if buyer_balance < cost_usdc:
+                        logger.warning(
+                            "buyer_balance_insufficient_at_settlement",
+                            job_id=job_id,
+                            buyer=buyer_address,
+                            balance=float(buyer_balance),
+                            required=float(cost_usdc)
+                        )
+                        payment_status = "insufficient_funds"
+                        # Continue to report job completion but mark payment as failed
+                except Exception as e:
+                    logger.warning("balance_recheck_failed", job_id=job_id, error=str(e))
+                
+                if payment_status == "success":
+                    logger.info(
+                        "processing_payment",
+                        job_id=job_id,
+                        buyer=buyer_address,
+                        amount_usdc_wei=cost_usdc_wei
+                    )
+                    
+                    receipt = await self.payment_processor.settle_payment(
+                        from_address=buyer_address,
+                        amount=cost_usdc_wei,
+                        job_id=job_id
+                    )
+                    
+                    if receipt.success:
+                        payment_tx_hash = receipt.tx_hash
+                        logger.info(
+                            "payment_settled",
+                            job_id=job_id,
+                            tx_hash=payment_tx_hash,
+                            amount=cost_usdc_wei
+                        )
+                    else:
+                        payment_status = "settlement_failed"
+                        logger.warning(
+                            "payment_settlement_failed",
+                            job_id=job_id,
+                            error=receipt.error
+                        )
 
             response = await self.client.post(
                 f"{self.config.marketplace_url}/api/v1/jobs/{job_id}/complete",
@@ -290,7 +416,8 @@ class SellerAgent:
             logger.info(
                 "job_completion_reported",
                 job_id=job_id,
-                cost=float(total_cost)
+                cost_usd=float(total_cost),
+                payment_tx_hash=payment_tx_hash
             )
 
         except Exception as e:

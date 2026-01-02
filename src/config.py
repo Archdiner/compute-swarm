@@ -39,6 +39,12 @@ class MarketplaceConfig(BaseSettings):
     x402_enabled: bool = Field(default=True)
     payment_challenge_timeout: int = Field(default=300, description="Timeout in seconds")
     payment_verification_retries: int = Field(default=3)
+    
+    # Testnet Mode - When True, payments are simulated; when False, real USDC transfers
+    testnet_mode: bool = Field(
+        default=True, 
+        description="Use simulated payments (testnet) or real transfers (production)"
+    )
 
     # CORS Configuration
     cors_origins: list[str] = Field(
@@ -87,11 +93,25 @@ class SellerConfig(BaseSettings):
     # Compute Configuration
     max_concurrent_jobs: int = Field(default=1, description="Max simultaneous compute jobs")
     job_timeout: int = Field(default=3600, description="Max job duration in seconds")
+    
+    # Docker Sandboxing Configuration
+    docker_enabled: bool = Field(default=True, description="Enable Docker sandboxing for job execution")
+    docker_image: str = Field(default="computeswarm-sandbox:latest", description="Docker image for sandboxed execution")
+    docker_memory_limit: str = Field(default="4g", description="Memory limit for Docker containers")
+    docker_cpu_limit: float = Field(default=2.0, description="CPU limit for Docker containers")
+    docker_pids_limit: int = Field(default=100, description="Process limit for Docker containers")
+    docker_tmpfs_size: str = Field(default="1g", description="Size of tmpfs mount in containers")
 
     # Network Configuration
     network: Literal["base-sepolia", "base-mainnet"] = Field(default="base-sepolia")
     rpc_url: str = Field(default="https://sepolia.base.org")
     usdc_contract_address: str = Field(default="0x036CbD53842c5426634e7929541eC2318f3dCF7e")
+    
+    # Testnet Mode - When True, payments are simulated; when False, real USDC transfers
+    testnet_mode: bool = Field(
+        default=True, 
+        description="Use simulated payments (testnet) or real transfers (production)"
+    )
 
     @field_validator("seller_private_key")
     @classmethod
