@@ -1,6 +1,6 @@
 """
 ComputeSwarm Buyer CLI
-Queue-based job submission and monitoring
+Queue-based job submission, monitoring, and x402 payment handling
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from src.marketplace.models import GPUType
 from src.config import get_buyer_config
+from src.payments import PaymentProcessor
 
 logger = structlog.get_logger()
 console = Console()
@@ -27,11 +28,23 @@ class BuyerCLI:
     2. Submitting jobs to queue
     3. Monitoring job status
     4. Listing user's jobs
+    5. Handling x402 payments
     """
 
     def __init__(self):
         self.config = get_buyer_config()
         self.client = httpx.AsyncClient(timeout=60.0)
+        
+        # Initialize payment processor if private key is available
+        self.payment_processor: Optional[PaymentProcessor] = None
+        if self.config.buyer_private_key:
+            self.payment_processor = PaymentProcessor(
+                private_key=self.config.buyer_private_key,
+                rpc_url=self.config.rpc_url,
+                usdc_address=self.config.usdc_contract_address,
+                network=self.config.network,
+            )
+            console.print(f"[dim]Wallet: {self.payment_processor.address}[/dim]")
 
     async def get_marketplace_stats(self):
         """Get marketplace statistics"""
@@ -68,6 +81,33 @@ class BuyerCLI:
         console.print(f"  Executing: {stats['jobs']['executing']}")
         console.print(f"  Completed: {stats['jobs']['completed']}")
         console.print(f"  Failed: {stats['jobs']['failed']}")
+
+    async def get_wallet_balance(self):
+        """Get wallet USDC balance"""
+        if not self.payment_processor:
+            console.print("[yellow]No wallet configured[/yellow]")
+            return None
+        
+        try:
+            balance = self.payment_processor.get_usdc_balance()
+            return balance
+        except Exception as e:
+            logger.error("balance_fetch_failed", error=str(e))
+            return None
+
+    def display_wallet_info(self, balance):
+        """Display wallet information"""
+        if not self.payment_processor:
+            console.print("[yellow]No wallet configured. Set BUYER_PRIVATE_KEY in .env[/yellow]")
+            return
+            
+        console.print("\n[bold cyan]Wallet Information[/bold cyan]")
+        console.print(f"Address: {self.payment_processor.address}")
+        console.print(f"Network: {self.config.network}")
+        if balance is not None:
+            console.print(f"USDC Balance: [green]${balance:.6f}[/green]")
+        else:
+            console.print(f"USDC Balance: [yellow]Unable to fetch[/yellow]")
 
     async def submit_job(
         self,
@@ -177,7 +217,9 @@ class BuyerCLI:
         if job.get("execution_duration_seconds"):
             console.print(f"Duration: {job['execution_duration_seconds']:.2f}s")
         if job.get("total_cost_usd"):
-            console.print(f"Total Cost: [yellow]${job['total_cost_usd']:.4f}[/yellow]")
+            console.print(f"Total Cost: [yellow]${job['total_cost_usd']:.6f}[/yellow]")
+        if job.get("payment_tx_hash"):
+            console.print(f"Payment TX: [dim]{job['payment_tx_hash']}[/dim]")
 
         if job.get("result_output"):
             console.print(f"\n[bold green]Output:[/bold green]")
@@ -245,7 +287,7 @@ class BuyerCLI:
                 status = job["status"]
                 created = job["created_at"][:19] if job.get("created_at") else "N/A"
                 duration = f"{job['execution_duration_seconds']:.1f}" if job.get("execution_duration_seconds") else "-"
-                cost = f"${job['total_cost_usd']:.4f}" if job.get("total_cost_usd") else "-"
+                cost = f"${job['total_cost_usd']:.6f}" if job.get("total_cost_usd") else "-"
 
                 table.add_row(job_id_short, status, created, duration, cost)
 
@@ -277,7 +319,7 @@ class BuyerCLI:
     async def interactive_mode(self):
         """Run interactive CLI mode"""
         console.print("[bold cyan]ComputeSwarm Buyer CLI (Queue-Based)[/bold cyan]")
-        console.print("Commands: stats, submit, status, list, cancel, wait, quit\n")
+        console.print("Commands: stats, submit, status, list, cancel, wait, wallet, quit\n")
 
         while True:
             try:
@@ -289,6 +331,10 @@ class BuyerCLI:
                 elif command == "stats":
                     stats = await self.get_marketplace_stats()
                     self.display_marketplace_stats(stats)
+
+                elif command == "wallet":
+                    balance = await self.get_wallet_balance()
+                    self.display_wallet_info(balance)
 
                 elif command == "submit":
                     script_path = console.input("Path to Python script: ").strip()
@@ -338,6 +384,7 @@ class BuyerCLI:
                 elif command == "help":
                     console.print("\n[bold]Available Commands:[/bold]")
                     console.print("  stats  - Show marketplace statistics")
+                    console.print("  wallet - Show wallet balance and info")
                     console.print("  submit - Submit a new job to queue")
                     console.print("  status - Get status of a specific job")
                     console.print("  list   - List your jobs")
@@ -382,6 +429,10 @@ async def main():
             stats = await cli.get_marketplace_stats()
             cli.display_marketplace_stats(stats)
 
+        elif command == "wallet":
+            balance = await cli.get_wallet_balance()
+            cli.display_wallet_info(balance)
+
         elif command == "status" and len(sys.argv) > 2:
             job_id = sys.argv[2]
             job = await cli.get_job_status(job_id)
@@ -404,7 +455,7 @@ async def main():
 
         else:
             console.print("[red]Invalid command[/red]")
-            console.print("Usage: python -m src.buyer.cli [stats|status <job_id>|list|submit <script_path> [--wait]]")
+            console.print("Usage: python -m src.buyer.cli [stats|wallet|status <job_id>|list|submit <script_path> [--wait]]")
 
     else:
         # Interactive mode
