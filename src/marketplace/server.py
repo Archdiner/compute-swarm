@@ -9,9 +9,12 @@ from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import structlog
 
 from src.marketplace.models import (
@@ -87,6 +90,31 @@ async def run_maintenance_tasks():
             logger.error("maintenance_task_error", error=str(e))
 
 
+# Initialize rate limiter
+# Key function extracts client identifier for rate limiting
+def get_client_key(request: Request) -> str:
+    """Get client identifier for rate limiting - uses IP address"""
+    return get_remote_address(request)
+
+
+def get_buyer_key(request: Request) -> str:
+    """Get buyer address for rate limiting job submissions"""
+    buyer = request.query_params.get("buyer_address", "")
+    if buyer:
+        return buyer
+    return get_remote_address(request)
+
+
+def get_node_key(request: Request) -> str:
+    """Get node_id for rate limiting seller operations"""
+    node_id = request.query_params.get("node_id", "")
+    if node_id:
+        return node_id
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_client_key)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="ComputeSwarm Marketplace",
@@ -94,6 +122,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan
 )
+
+# Attach limiter to app state and add exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware with configurable origins
 config = get_marketplace_config()
@@ -179,7 +211,8 @@ async def health_check():
 # ============================================================================
 
 @app.post("/api/v1/nodes/register", status_code=status.HTTP_201_CREATED)
-async def register_node(registration: NodeRegistration):
+@limiter.limit("5/minute")
+async def register_node(request: Request, registration: NodeRegistration):
     """
     Register a new compute node in the marketplace
     Called by Seller Agent on startup
@@ -222,7 +255,9 @@ async def register_node(registration: NodeRegistration):
 
 
 @app.get("/api/v1/nodes")
+@limiter.limit("100/minute")
 async def list_nodes(
+    request: Request,
     gpu_type: Optional[str] = None,
     max_price: Optional[float] = None,
 ):
@@ -249,7 +284,8 @@ async def list_nodes(
 
 
 @app.get("/api/v1/nodes/{node_id}")
-async def get_node(node_id: str):
+@limiter.limit("100/minute")
+async def get_node(request: Request, node_id: str):
     """Get details for a specific node"""
     db = get_db_client()
 
@@ -306,7 +342,9 @@ async def mark_node_unavailable(node_id: str):
 # ============================================================================
 
 @app.post("/api/v1/jobs/submit", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute", key_func=get_buyer_key)
 async def submit_job(
+    request: Request,
     buyer_address: str,
     script: str,
     requirements: Optional[str] = None,
@@ -353,7 +391,9 @@ async def submit_job(
 
 
 @app.post("/api/v1/jobs/claim")
+@limiter.limit("30/minute", key_func=get_node_key)
 async def claim_job(
+    request: Request,
     node_id: str,
     seller_address: str,
     gpu_type: str,
@@ -544,7 +584,8 @@ async def cancel_job(job_id: str, buyer_address: str):
 
 
 @app.get("/api/v1/jobs/{job_id}")
-async def get_job_status(job_id: str):
+@limiter.limit("100/minute")
+async def get_job_status(request: Request, job_id: str):
     """Get the status and details of a job"""
     db = get_db_client()
 
@@ -559,7 +600,9 @@ async def get_job_status(job_id: str):
 
 
 @app.get("/api/v1/jobs/buyer/{buyer_address}")
+@limiter.limit("100/minute")
 async def list_buyer_jobs(
+    request: Request,
     buyer_address: str,
     status_filter: Optional[str] = None,
     limit: int = 50
@@ -579,7 +622,9 @@ async def list_buyer_jobs(
 
 
 @app.get("/api/v1/jobs/seller/{seller_address}")
+@limiter.limit("100/minute")
 async def list_seller_jobs(
+    request: Request,
     seller_address: str,
     status_filter: Optional[str] = None,
     limit: int = 50
@@ -599,7 +644,8 @@ async def list_seller_jobs(
 
 
 @app.get("/api/v1/jobs/queue/pending")
-async def get_pending_jobs(gpu_type: Optional[str] = None, limit: int = 100):
+@limiter.limit("100/minute")
+async def get_pending_jobs(request: Request, gpu_type: Optional[str] = None, limit: int = 100):
     """
     Get pending jobs in queue (for monitoring/debugging)
     Sellers should use /api/v1/jobs/claim instead
@@ -618,7 +664,8 @@ async def get_pending_jobs(gpu_type: Optional[str] = None, limit: int = 100):
 # ============================================================================
 
 @app.get("/api/v1/stats")
-async def get_marketplace_stats():
+@limiter.limit("100/minute")
+async def get_marketplace_stats(request: Request):
     """Get comprehensive marketplace statistics"""
     db = get_db_client()
 

@@ -1,36 +1,45 @@
 # ===== PRODUCTION DEPENDENCIES =====
 
 # Web Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-gunicorn==21.2.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
+fastapi>=0.109.0,<1.0.0
+uvicorn[standard]>=0.27.0,<1.0.0
+gunicorn>=21.2.0,<22.0.0
+pydantic>=2.5.3,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
 
 # Database & Caching (Cloud Services)
-supabase==2.3.4
-upstash-redis==0.15.0
+supabase>=2.3.4,<3.0.0
+# upstash-redis>=0.15.0,<1.0.0  # Not currently used - commented out for faster install
 
 # HTTP Client
-httpx==0.26.0
+# Note: supabase 2.27.0+ requires httpx>=0.26,<0.29
+httpx>=0.26.0,<0.29.0
 
 # GPU Compute
-torch==2.1.2
-torchvision==0.16.2
+# Note: PyTorch 2.1.2 doesn't support Python 3.13+
+# Using latest compatible version for Python 3.13 (2.6.0+)
+# For Python 3.8-3.12, you can pin to torch==2.1.2 if needed
+torch>=2.6.0,<3.0.0
+torchvision>=0.21.0,<1.0.0
 
 # Blockchain & Payments
-web3==6.15.0
-eth-account==0.10.0
+# Note: x402 1.0.0 requires eth-account>=0.13.7, which needs web3 7.x
+# Let pip resolve compatible versions
+web3>=7.0.0
+eth-account>=0.13.7
 x402>=0.2.1
 
 # Logging
-structlog==24.1.0
+structlog>=24.1.0,<25.0.0
 
 # Configuration
-python-dotenv==1.0.0
+python-dotenv>=1.0.0,<2.0.0
 
 # CLI
-rich==13.7.0
+rich>=13.7.0,<14.0.0
 
 # Performance
-uvloop==0.19.0
+uvloop>=0.19.0,<1.0.0
+
+# Rate Limiting
+slowapi>=0.1.9,<1.0.0
