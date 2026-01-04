@@ -36,6 +36,22 @@ class VerificationStatus(str, Enum):
     VERIFIED = "verified"
 
 
+class JobType(str, Enum):
+    """Types of compute jobs"""
+    BATCH_JOB = "batch_job"
+    NOTEBOOK_SESSION = "notebook_session"
+    CONTAINER_SESSION = "container_session"
+
+
+class SessionStatus(str, Enum):
+    """Status of interactive sessions"""
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
 class GPUInfo(BaseModel):
     """GPU hardware information"""
     gpu_type: GPUType
@@ -179,3 +195,72 @@ class RatingRequest(BaseModel):
     """Request to rate a seller"""
     rating: int = Field(..., ge=1, le=5)
     comment: Optional[str] = None
+
+
+class Session(BaseModel):
+    """Interactive session (notebook or container)"""
+    id: Optional[str] = None
+    job_id: str
+    node_id: str
+    
+    # Session details
+    session_type: JobType
+    status: SessionStatus = SessionStatus.STARTING
+    
+    # Access
+    session_url: Optional[str] = None
+    session_token: Optional[str] = None
+    session_port: Optional[int] = None
+    
+    # Docker container info
+    container_id: Optional[str] = None
+    docker_image: Optional[str] = None
+    
+    # Timing
+    started_at: Optional[datetime] = None
+    last_heartbeat: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    
+    # Billing
+    billed_minutes: int = 0
+    total_cost_usd: Decimal = Decimal("0.00")
+    
+    # Timestamps
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @field_validator('session_type')
+    @classmethod
+    def validate_session_type(cls, v):
+        if v == JobType.BATCH_JOB:
+            raise ValueError('Session type cannot be batch_job')
+        return v
+
+    class Config:
+        json_encoders = {
+            Decimal: float,
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
+class SessionStartRequest(BaseModel):
+    """Request to start a notebook/container session"""
+    buyer_address: str
+    session_type: JobType = JobType.NOTEBOOK_SESSION
+    max_price_per_hour: float = 10.0
+    duration_minutes: int = 60
+    required_gpu_type: Optional[GPUType] = None
+    min_vram_gb: Optional[float] = None
+    docker_image: Optional[str] = None
+
+
+class SessionResponse(BaseModel):
+    """Response for session operations"""
+    job_id: str
+    session_id: str
+    status: SessionStatus
+    session_url: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    billed_minutes: int = 0
+    total_cost_usd: float = 0.0
