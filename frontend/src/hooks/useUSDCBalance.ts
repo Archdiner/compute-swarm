@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
-import { usePrivyWallet } from './useWallet';
+import { useWallet } from './useWallet';
 import { getUSDCBalance } from '../services/usdc';
-import { ethers } from 'ethers';
 
 export function useUSDCBalance() {
-  const { wallet, address, isConnected } = usePrivyWallet();
+  const { address, isConnected, getProvider } = useWallet();
   const [balance, setBalance] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchBalance = async () => {
-      if (!wallet || !address || !isConnected) {
+      if (!address || !isConnected) {
         setBalance(null);
         return;
       }
@@ -20,11 +19,9 @@ export function useUSDCBalance() {
       setError(null);
 
       try {
-        const provider = await wallet.getEthereumProvider();
-        const ethersProvider = new ethers.BrowserProvider(provider);
-        
+        const provider = await getProvider();
         const network = import.meta.env.VITE_NETWORK || 'base-sepolia';
-        const usdcBalance = await getUSDCBalance(ethersProvider, address, network);
+        const usdcBalance = await getUSDCBalance(provider, address, network);
         setBalance(usdcBalance);
       } catch (err: any) {
         setError(err.message || 'Failed to fetch balance');
@@ -39,8 +36,7 @@ export function useUSDCBalance() {
     // Refresh balance every 30 seconds
     const interval = setInterval(fetchBalance, 30000);
     return () => clearInterval(interval);
-  }, [wallet, address, isConnected]);
+  }, [address, isConnected, getProvider]);
 
   return { balance, loading, error };
 }
-

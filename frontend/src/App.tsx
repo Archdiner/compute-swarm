@@ -1,33 +1,26 @@
 import React, { useState } from 'react';
-import { PrivyProvider, usePrivy } from '@privy-io/react-auth';
-import { PRIVY_APP_ID, privyConfig } from './services/privy';
 import { LandingPage } from './pages/LandingPage';
 import { BuyerView } from './pages/BuyerView';
 import { SellerView } from './pages/SellerView';
 import { FlyingBee } from './components/FlyingBee';
 import { Wallet, Globe } from 'lucide-react';
+import { useWallet } from './hooks/useWallet';
 
 function AppContent() {
-  const { ready, authenticated, login, logout, user } = usePrivy();
+  const { address, isConnected, isLoading, error, connect, disconnect } = useWallet();
   const [view, setView] = useState<'landing' | 'buyer' | 'seller'>('landing');
 
-  const handleLogin = async () => {
-    await login();
-    setView('buyer');
+  const handleConnect = async () => {
+    await connect();
+    if (address) {
+      setView('buyer');
+    }
   };
 
-  const handleLogout = async () => {
-    await logout();
+  const handleDisconnect = () => {
+    disconnect();
     setView('landing');
   };
-
-  if (!ready) {
-    return (
-      <div className="min-h-screen bg-[#121214] flex items-center justify-center">
-        <div className="text-zinc-400">Loading...</div>
-      </div>
-    );
-  }
 
   if (view === 'landing') {
     return (
@@ -42,25 +35,26 @@ function AppContent() {
                 </span>
               </div>
             </div>
-            {authenticated ? (
+            {isConnected && address ? (
               <button
-                onClick={handleLogout}
+                onClick={handleDisconnect}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[11px] font-mono transition-all border border-zinc-800 hover:bg-zinc-900 text-zinc-400 hover:text-white"
               >
-                Logout
+                Disconnect
               </button>
             ) : (
               <button
-                onClick={handleLogin}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[11px] font-mono transition-all bg-zinc-100 text-zinc-950 border border-white hover:bg-zinc-200"
+                onClick={handleConnect}
+                disabled={isLoading}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[11px] font-mono transition-all bg-zinc-100 text-zinc-950 border border-white hover:bg-zinc-200 disabled:opacity-50"
               >
                 <Wallet className="w-3.5 h-3.5" />
-                Connect
+                {isLoading ? 'Connecting...' : 'Connect Wallet'}
               </button>
             )}
           </div>
         </nav>
-        <LandingPage onGetStarted={handleLogin} />
+        <LandingPage onGetStarted={handleConnect} />
       </div>
     );
   }
@@ -97,31 +91,69 @@ function AppContent() {
           </div>
 
           <div className="flex items-center gap-3">
-            {authenticated && user?.wallet?.address && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[11px] font-mono transition-all border bg-amber-400/5 text-amber-400 border-amber-400/20">
-                <Wallet className="w-3.5 h-3.5" />
-                {user.wallet.address.slice(0, 6)}...{user.wallet.address.slice(-4)}
+            {error && (
+              <div className="text-xs text-rose-400 max-w-xs truncate" title={error}>
+                {error}
               </div>
             )}
-            <button
-              onClick={handleLogout}
-              className="px-3 py-1.5 rounded-md text-[11px] font-mono transition-all border border-zinc-800 hover:bg-zinc-900 text-zinc-400 hover:text-white"
-            >
-              Logout
-            </button>
+            {isConnected && address ? (
+              <>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[11px] font-mono transition-all border bg-amber-400/5 text-amber-400 border-amber-400/20">
+                  <Wallet className="w-3.5 h-3.5" />
+                  {address.slice(0, 6)}...{address.slice(-4)}
+                </div>
+                <button
+                  onClick={handleDisconnect}
+                  className="px-3 py-1.5 rounded-md text-[11px] font-mono transition-all border border-zinc-800 hover:bg-zinc-900 text-zinc-400 hover:text-white"
+                >
+                  Disconnect
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleConnect}
+                disabled={isLoading}
+                className="px-3 py-1.5 rounded-md text-[11px] font-mono transition-all bg-zinc-100 text-zinc-950 border border-white hover:bg-zinc-200 disabled:opacity-50"
+              >
+                {isLoading ? 'Connecting...' : 'Connect'}
+              </button>
+            )}
           </div>
         </div>
       </nav>
 
       <main className="max-w-5xl mx-auto px-6">
-        {!authenticated ? (
+        {error && !isConnected && (
+          <div className="mt-4 p-4 bg-rose-400/10 border border-rose-400/20 rounded-lg text-sm text-rose-400">
+            {error.includes('not installed') ? (
+              <div>
+                <p className="font-semibold mb-2">MetaMask is required</p>
+                <p className="text-rose-300 mb-3">
+                  Please install MetaMask browser extension to connect your wallet.
+                </p>
+                <a
+                  href="https://metamask.io/download/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 hover:underline font-medium"
+                >
+                  Install MetaMask →
+                </a>
+              </div>
+            ) : (
+              error
+            )}
+          </div>
+        )}
+        {!isConnected ? (
           <div className="space-y-12 py-12 text-center">
             <p className="text-zinc-500">Please connect your wallet to continue.</p>
             <button
-              onClick={handleLogin}
-              className="bg-amber-400 hover:bg-amber-300 text-zinc-950 px-6 py-3 rounded-md font-semibold transition-all"
+              onClick={handleConnect}
+              disabled={isLoading}
+              className="bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-zinc-950 px-6 py-3 rounded-md font-semibold transition-all"
             >
-              Connect Wallet
+              {isLoading ? 'Connecting...' : 'Connect Wallet'}
             </button>
           </div>
         ) : view === 'buyer' ? (
@@ -150,36 +182,7 @@ function AppContent() {
 }
 
 function App() {
-  if (!PRIVY_APP_ID) {
-    return (
-      <div className="min-h-screen bg-[#121214] flex items-center justify-center">
-        <div className="text-center text-zinc-400 max-w-md mx-auto p-6">
-          <h1 className="text-xl font-semibold text-white mb-4">Configuration Required</h1>
-          <p className="mb-4">
-            Please set VITE_PRIVY_APP_ID in your .env.local file. Get your Privy App ID from{' '}
-            <a
-              href="https://privy.io"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-amber-400 hover:underline"
-            >
-              privy.io
-            </a>
-          </p>
-          <p className="text-sm text-zinc-500">
-            Copy .env.local.example to .env.local and add your Privy App ID.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <PrivyProvider appId={PRIVY_APP_ID} config={privyConfig}>
-      <AppContent />
-    </PrivyProvider>
-  );
+  return <AppContent />;
 }
 
 export default App;
-

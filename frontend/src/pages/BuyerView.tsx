@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Terminal, ChevronRight, ArrowRight, Cpu, Activity, Wallet } from 'lucide-react';
-import { usePrivyWallet } from '../hooks/useWallet';
+import { useWallet } from '../hooks/useWallet';
 import { useBuyerJobs, useJobStatus } from '../hooks/useJobs';
 import { useUSDCBalance } from '../hooks/useUSDCBalance';
 import { apiClient } from '../services/api';
@@ -15,7 +15,7 @@ const TEMPLATES = [
 ];
 
 export const BuyerView: React.FC = () => {
-  const { address, isConnected } = usePrivyWallet();
+  const { address, isConnected } = useWallet();
   const { jobs, loading: jobsLoading, refresh } = useBuyerJobs(address, true);
   const { balance: usdcBalance, loading: balanceLoading } = useUSDCBalance();
   const [view, setView] = useState<'list' | 'create'>('list');

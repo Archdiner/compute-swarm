@@ -1,6 +1,20 @@
 import axios, { AxiosInstance } from 'axios';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// In production on Vercel, use same domain. In dev, use configured URL or localhost
+// If VITE_BACKEND_URL is set, use it. Otherwise:
+// - Production: use same domain (empty string = relative URLs work as /api)
+// - Development: use localhost:8000
+const getBackendUrl = () => {
+  const envUrl = import.meta.env.VITE_BACKEND_URL;
+  if (envUrl) {
+    return envUrl;
+  }
+  // In production (Vercel), API is on same domain at /api
+  // In development, use localhost
+  return import.meta.env.PROD ? '' : 'http://localhost:8000';
+};
+
+const BACKEND_URL = getBackendUrl();
 
 class ApiClient {
   private client: AxiosInstance;

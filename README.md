@@ -169,10 +169,10 @@ python -m src.marketplace.server
 
 # Terminal 2: Start frontend web UI
 cd frontend
-cp .env.local.example .env.local
-# Edit .env.local and add your Privy App ID (get from https://privy.io)
+# Create .env.local (already created if following setup)
 npm install
 npm run dev
+# Note: Users need MetaMask browser extension to connect wallets
 
 # Terminal 3: Start seller agent (on GPU machine)
 python -m src.seller.agent
@@ -266,12 +266,12 @@ compute-swarm/
 ```
 
 **Tech Stack:**
-- **Frontend**: React, TypeScript, Vite, Privy (embedded wallets), Tailwind CSS
+- **Frontend**: React, TypeScript, Vite, MetaMask (wallet connection), Tailwind CSS
 - **Backend**: FastAPI, Python 3.11
 - **Database**: Supabase (PostgreSQL)
 - **Payments**: x402 SDK, Web3.py, USDC on Base
 - **Compute**: PyTorch, Docker, NVIDIA Container Toolkit
-- **Authentication**: Privy embedded wallets with email/social login
+- **Authentication**: MetaMask wallet connection
 
 ---
 

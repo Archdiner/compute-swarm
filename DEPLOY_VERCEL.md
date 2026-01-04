@@ -5,8 +5,8 @@ This guide explains how to deploy the ComputeSwarm frontend to Vercel.
 ## Prerequisites
 
 1. A Vercel account (sign up at https://vercel.com)
-2. Your Privy App ID (get from https://privy.io)
-3. Your backend API URL (where the FastAPI server is deployed)
+2. Your backend API URL (where the FastAPI server is deployed)
+3. MetaMask browser extension (users will need this to connect wallets)
 
 ## Deployment Steps
 
@@ -27,8 +27,6 @@ This guide explains how to deploy the ComputeSwarm frontend to Vercel.
 3. **Set Environment Variables:**
    Add these in the Vercel dashboard under "Environment Variables":
    
-   - `VITE_PRIVY_APP_ID`: Your Privy App ID
-     - Example: `clxxxxxxxxxxxxxxxxxx`
    - `VITE_BACKEND_URL`: Your backend API URL
      - For development: `http://localhost:8000`
      - For production: `https://api.yourdomain.com` or your deployed backend URL
@@ -64,7 +62,6 @@ This guide explains how to deploy the ComputeSwarm frontend to Vercel.
 
 5. **Set Environment Variables:**
    ```bash
-   vercel env add VITE_PRIVY_APP_ID
    vercel env add VITE_BACKEND_URL
    vercel env add VITE_NETWORK
    ```
@@ -92,10 +89,12 @@ After deploying to Vercel, update your backend CORS settings to include your Ver
    )
    ```
 
-### Update Privy Configuration
+### Wallet Connection
 
-1. In your Privy dashboard, add your Vercel domain to allowed origins
-2. This allows Privy authentication to work from your production domain
+Users will need MetaMask browser extension installed to connect their wallets. The app will automatically:
+- Prompt users to install MetaMask if not detected
+- Switch to Base network (Sepolia or Mainnet) when connecting
+- Handle network switching automatically
 
 ### Custom Domain (Optional)
 
@@ -108,7 +107,6 @@ After deploying to Vercel, update your backend CORS settings to include your Ver
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `VITE_PRIVY_APP_ID` | Privy App ID for authentication | `clxxxxxxxxxxxxxxxxxx` |
 | `VITE_BACKEND_URL` | Backend API URL | `https://api.computeswarm.xyz` |
 | `VITE_NETWORK` | Blockchain network | `base-sepolia` or `base-mainnet` |
 
@@ -125,11 +123,12 @@ After deploying to Vercel, update your backend CORS settings to include your Ver
 - Ensure backend CORS includes your Vercel URL
 - Check that `FRONTEND_URL` is set in backend environment
 
-### Privy Authentication Not Working
+### Wallet Connection Not Working
 
-- Verify Privy App ID is correct
-- Check that Vercel domain is added to Privy allowed origins
+- Verify MetaMask is installed and unlocked
+- Check that MetaMask is connected to the correct network (Base Sepolia or Base Mainnet)
 - Ensure network configuration matches (testnet vs mainnet)
+- The app will automatically prompt to switch networks if needed
 
 ### API Calls Failing
 

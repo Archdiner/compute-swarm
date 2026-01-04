@@ -14,12 +14,13 @@ npm install
 cp .env.local.example .env.local
 ```
 
-3. Add your Privy App ID to `.env.local`:
+3. Configure `.env.local`:
 ```
-VITE_PRIVY_APP_ID=your_privy_app_id_here
 VITE_BACKEND_URL=http://localhost:8000
 VITE_NETWORK=base-sepolia
 ```
+
+**Note:** You'll need MetaMask browser extension installed to connect your wallet.
 
 4. Start development server:
 ```bash
@@ -32,7 +33,6 @@ This project is configured for automatic deployment on Vercel:
 
 1. Connect your GitHub repository to Vercel
 2. Set environment variables in Vercel dashboard:
-   - `VITE_PRIVY_APP_ID`: Your Privy App ID
    - `VITE_BACKEND_URL`: Your backend API URL (e.g., https://api.computeswarm.xyz)
    - `VITE_NETWORK`: `base-sepolia` or `base-mainnet`
 
@@ -49,7 +49,7 @@ The `vercel.json` configuration handles:
 
 - **React 18** with TypeScript
 - **Vite** for fast development and building
-- **Privy** for embedded wallet authentication
+- **MetaMask** for wallet connection (via ethers.js)
 - **Tailwind CSS** for styling
 - **Ethers.js** for blockchain interactions
 
