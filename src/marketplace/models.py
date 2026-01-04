@@ -38,6 +38,7 @@ class GPUInfo(BaseModel):
     gpu_type: GPUType
     device_name: str
     vram_gb: float
+    num_gpus: int = Field(default=1, description="Number of GPUs available")
     compute_capability: Optional[str] = None
     cuda_version: Optional[str] = None
     driver_version: Optional[str] = None

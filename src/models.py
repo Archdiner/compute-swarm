@@ -34,6 +34,7 @@ class GPUInfo(BaseModel):
     gpu_type: GPUType
     device_name: str
     vram_gb: Optional[Decimal] = None
+    num_gpus: int = Field(default=1, ge=1, description="Number of GPUs available")
     compute_capability: Optional[str] = None
     cuda_version: Optional[str] = None
     driver_version: Optional[str] = None
@@ -66,6 +67,7 @@ class ComputeJob(BaseModel):
     timeout_seconds: int = 3600
     required_gpu_type: Optional[GPUType] = None
     min_vram_gb: Optional[Decimal] = None
+    num_gpus: int = Field(default=1, ge=1, le=8, description="Number of GPUs required (1-8)")
     
     # Assignment fields (filled when claimed)
     node_id: Optional[str] = None

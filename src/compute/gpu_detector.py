@@ -42,23 +42,34 @@ class GPUDetector:
         return GPUInfo(
             gpu_type=GPUType.UNKNOWN,
             device_name="CPU",
-            vram_gb=0.0
+            vram_gb=0.0,
+            num_gpus=0
         )
 
     @staticmethod
     def _detect_cuda() -> Optional[GPUInfo]:
-        """Detect NVIDIA CUDA GPU"""
+        """Detect NVIDIA CUDA GPU(s) - supports multi-GPU configurations"""
         try:
             import torch
             if torch.cuda.is_available():
+                num_gpus = torch.cuda.device_count()
                 device_name = torch.cuda.get_device_name(0)
-                vram_bytes = torch.cuda.get_device_properties(0).total_memory
-                vram_gb = vram_bytes / (1024 ** 3)
+                
+                # Calculate total VRAM across all GPUs
+                total_vram_bytes = sum(
+                    torch.cuda.get_device_properties(i).total_memory 
+                    for i in range(num_gpus)
+                )
+                vram_gb = total_vram_bytes / (1024 ** 3)
+                
+                # Update device name to show count for multi-GPU
+                if num_gpus > 1:
+                    device_name = f"{num_gpus}x {device_name}"
 
                 # Get CUDA version
                 cuda_version = torch.version.cuda
 
-                # Get compute capability
+                # Get compute capability (from first GPU)
                 capability = torch.cuda.get_device_capability(0)
                 compute_capability = f"{capability[0]}.{capability[1]}"
 
@@ -72,12 +83,13 @@ class GPUDetector:
                         timeout=5
                     )
                     if result.returncode == 0:
-                        driver_version = result.stdout.strip()
+                        driver_version = result.stdout.strip().split('\n')[0]
                 except Exception:
                     pass
 
                 logger.info(
                     "cuda_detected",
+                    num_gpus=num_gpus,
                     device=device_name,
                     vram_gb=vram_gb,
                     cuda_version=cuda_version,
@@ -88,6 +100,7 @@ class GPUDetector:
                     gpu_type=GPUType.CUDA,
                     device_name=device_name,
                     vram_gb=round(vram_gb, 2),
+                    num_gpus=num_gpus,
                     compute_capability=compute_capability,
                     cuda_version=cuda_version,
                     driver_version=driver_version
@@ -158,7 +171,8 @@ class GPUDetector:
                 return GPUInfo(
                     gpu_type=GPUType.MPS,
                     device_name=chip_name,
-                    vram_gb=vram_gb
+                    vram_gb=vram_gb,
+                    num_gpus=1  # Apple Silicon has unified GPU architecture
                 )
 
         except ImportError:
