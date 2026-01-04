@@ -116,11 +116,62 @@ def get_node_key(request: Request) -> str:
 
 limiter = Limiter(key_func=get_client_key)
 
-# Initialize FastAPI app
+# Initialize FastAPI app with enhanced documentation
 app = FastAPI(
     title="ComputeSwarm Marketplace",
-    description="Decentralized P2P GPU Marketplace using x402 protocol",
+    description="""
+    **Decentralized P2P GPU Marketplace with x402 Micropayments**
+    
+    ComputeSwarm connects GPU sellers with buyers through trustless, per-second USDC payments on Base L2.
+    
+    ### Features
+    - Queue-based job submission and matching
+    - x402 protocol for trustless payments
+    - Multi-GPU support (NVIDIA CUDA, Apple Silicon MPS)
+    - Real-time job monitoring and cost estimation
+    - Seller earnings tracking
+    
+    ### Quick Start
+    - Submit jobs: `POST /api/v1/jobs/submit`
+    - Check status: `GET /api/v1/jobs/{job_id}`
+    - View marketplace: `GET /api/v1/stats`
+    
+    Built for the x402 Hackathon.
+    """,
     version="0.1.0",
+    contact={
+        "name": "ComputeSwarm",
+        "url": "https://github.com/Archdiner/compute-swarm",
+    },
+    license_info={
+        "name": "MIT",
+    },
+    tags_metadata=[
+        {
+            "name": "Marketplace",
+            "description": "Core marketplace operations - job submission, stats, nodes",
+        },
+        {
+            "name": "Jobs",
+            "description": "Job management - submit, monitor, cancel, and track compute jobs",
+        },
+        {
+            "name": "Nodes",
+            "description": "GPU node management - registration, heartbeat, availability",
+        },
+        {
+            "name": "Sellers",
+            "description": "Seller operations - earnings, job history, profile management",
+        },
+        {
+            "name": "Payments",
+            "description": "x402 payment protocol integration",
+        },
+        {
+            "name": "Health",
+            "description": "System health and status endpoints",
+        },
+    ],
     lifespan=lifespan
 )
 
@@ -139,7 +190,7 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.get("/", tags=["Health"])
 async def root():
     """Root endpoint with basic info"""
     return {
@@ -150,7 +201,7 @@ async def root():
     }
 
 
-@app.get("/x402.json", response_model=X402Manifest)
+@app.get("/x402.json", response_model=X402Manifest, tags=["Payments"])
 async def get_x402_manifest():
     """
     x402 protocol manifest
@@ -174,7 +225,7 @@ async def get_x402_manifest():
     return manifest
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"])
 async def health_check():
     """Health check endpoint - works even without database"""
     try:
@@ -211,7 +262,7 @@ async def health_check():
 # Node Management Endpoints
 # ============================================================================
 
-@app.post("/api/v1/nodes/register", status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/nodes/register", status_code=status.HTTP_201_CREATED, tags=["Nodes"])
 @limiter.limit("5/minute")
 async def register_node(request: Request, registration: NodeRegistration):
     """
@@ -255,7 +306,7 @@ async def register_node(request: Request, registration: NodeRegistration):
     }
 
 
-@app.get("/api/v1/nodes")
+@app.get("/api/v1/nodes", tags=["Marketplace"])
 @limiter.limit("100/minute")
 async def list_nodes(
     request: Request,
@@ -342,7 +393,7 @@ async def mark_node_unavailable(node_id: str):
 # Job Management Endpoints (Queue-Based)
 # ============================================================================
 
-@app.post("/api/v1/jobs/estimate")
+@app.post("/api/v1/jobs/estimate", tags=["Jobs"])
 @limiter.limit("30/minute")
 async def estimate_job_cost(
     request: Request,
@@ -439,7 +490,7 @@ async def estimate_job_cost(
     }
 
 
-@app.post("/api/v1/jobs/submit", status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/jobs/submit", status_code=status.HTTP_201_CREATED, tags=["Jobs"])
 @limiter.limit("10/minute", key_func=get_buyer_key)
 async def submit_job(
     request: Request,
@@ -916,7 +967,7 @@ async def get_seller_job_history(
 # Statistics and Monitoring
 # ============================================================================
 
-@app.get("/api/v1/stats")
+@app.get("/api/v1/stats", tags=["Marketplace"])
 @limiter.limit("100/minute")
 async def get_marketplace_stats(request: Request):
     """Get comprehensive marketplace statistics"""
