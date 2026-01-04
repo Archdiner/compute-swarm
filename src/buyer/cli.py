@@ -16,6 +16,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from src.marketplace.models import GPUType
 from src.config import get_buyer_config
 from src.payments import PaymentProcessor
+from src.templates import list_templates, get_template, render_template, get_template_help, TemplateCategory
+from pathlib import Path
 
 logger = structlog.get_logger()
 console = Console()
@@ -108,6 +110,154 @@ class BuyerCLI:
             console.print(f"USDC Balance: [green]${balance:.6f}[/green]")
         else:
             console.print(f"USDC Balance: [yellow]Unable to fetch[/yellow]")
+
+    async def estimate_job_cost(
+        self,
+        timeout_seconds: int = 3600,
+        required_gpu_type: Optional[str] = None,
+        min_vram_gb: Optional[float] = None,
+        num_gpus: int = 1
+    ) -> Optional[dict]:
+        """
+        Estimate job cost before submission
+        """
+        try:
+            params = {
+                "timeout_seconds": timeout_seconds,
+                "num_gpus": num_gpus
+            }
+            if required_gpu_type:
+                params["required_gpu_type"] = required_gpu_type
+            if min_vram_gb:
+                params["min_vram_gb"] = min_vram_gb
+            
+            response = await self.client.post(
+                f"{self.config.marketplace_url}/api/v1/jobs/estimate",
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error("cost_estimation_failed", error=str(e))
+            return None
+    
+    async def upload_input_file(self, file_path: str, job_id: str) -> Optional[str]:
+        """
+        Upload an input file for a job
+        Returns the storage URL that can be used in the job script
+        """
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                console.print(f"[red]File not found: {file_path}[/red]")
+                return None
+            
+            # Read file and upload via marketplace API
+            with open(path, "rb") as f:
+                file_data = f.read()
+            
+            import base64
+            file_b64 = base64.b64encode(file_data).decode('utf-8')
+            
+            response = await self.client.post(
+                f"{self.config.marketplace_url}/api/v1/jobs/{job_id}/files/upload",
+                json={
+                    "file_name": path.name,
+                    "file_type": "input",
+                    "content_base64": file_b64
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                console.print(f"[green]✓ Uploaded: {path.name}[/green]")
+                console.print(f"  Storage path: [dim]{data.get('storage_path')}[/dim]")
+                return data.get('download_url')
+            else:
+                console.print(f"[yellow]File upload not available (storage not configured)[/yellow]")
+                return None
+                
+        except Exception as e:
+            logger.warning("file_upload_failed", error=str(e))
+            console.print(f"[yellow]File upload failed: {e}[/yellow]")
+            return None
+    
+    async def download_output_file(self, job_id: str, output_dir: str = ".") -> bool:
+        """
+        Download output files from a completed job
+        """
+        try:
+            # List files for job
+            response = await self.client.get(
+                f"{self.config.marketplace_url}/api/v1/jobs/{job_id}/files"
+            )
+            
+            if response.status_code != 200:
+                console.print("[yellow]No files available for this job[/yellow]")
+                return False
+            
+            files = response.json().get("files", [])
+            output_files = [f for f in files if f.get("file_type") == "output"]
+            
+            if not output_files:
+                console.print("[yellow]No output files found[/yellow]")
+                return False
+            
+            # Download each file
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            for file_info in output_files:
+                file_name = file_info.get("file_name", "output")
+                download_url = file_info.get("download_url")
+                
+                if download_url:
+                    # Download via signed URL
+                    async with httpx.AsyncClient() as client:
+                        file_response = await client.get(download_url)
+                        if file_response.status_code == 200:
+                            dest = output_path / file_name
+                            dest.write_bytes(file_response.content)
+                            console.print(f"[green]✓ Downloaded: {dest}[/green]")
+            
+            return True
+            
+        except Exception as e:
+            logger.warning("file_download_failed", error=str(e))
+            console.print(f"[yellow]File download failed: {e}[/yellow]")
+            return False
+
+    def display_cost_estimate(self, estimate: dict):
+        """Display cost estimate in a formatted way"""
+        if not estimate or not estimate.get("estimated"):
+            console.print(f"[yellow]{estimate.get('message', 'Unable to estimate cost')}[/yellow]")
+            if estimate.get("suggestion"):
+                console.print(f"[dim]{estimate['suggestion']}[/dim]")
+            return
+        
+        console.print("\n[bold cyan]Cost Estimate[/bold cyan]")
+        console.print("=" * 40)
+        
+        cost = estimate["cost_estimate"]
+        hourly = estimate["hourly_rates"]
+        queue = estimate["queue"]
+        
+        console.print(f"\n[bold]Estimated Cost:[/bold]")
+        console.print(f"  Min: [green]${cost['min_usd']:.4f}[/green] USDC")
+        console.print(f"  Max: [yellow]${cost['max_usd']:.4f}[/yellow] USDC")
+        console.print(f"  Avg: [cyan]${cost['avg_usd']:.4f}[/cyan] USDC")
+        
+        console.print(f"\n[bold]Hourly Rates:[/bold]")
+        console.print(f"  ${hourly['min_per_hour']:.2f} - ${hourly['max_per_hour']:.2f}/hr")
+        
+        console.print(f"\n[bold]Availability:[/bold]")
+        console.print(f"  Matching nodes: [green]{estimate['matching_nodes']}[/green]")
+        console.print(f"  GPU types: {', '.join(estimate['gpu_types_available'])}")
+        console.print(f"  Pending jobs: {queue['pending_jobs']}")
+        console.print(f"  Est. wait time: ~{queue['estimated_wait_minutes']} min")
+        
+        console.print("")
 
     async def submit_job(
         self,
@@ -381,16 +531,48 @@ class BuyerCLI:
                     job_id = console.input("Job ID to wait for: ").strip()
                     await self.wait_for_job(job_id)
 
+                elif command == "templates":
+                    self.display_templates()
+                
+                elif command == "template":
+                    await self.submit_from_template()
+                
+                elif command == "estimate":
+                    try:
+                        timeout = int(console.input("Timeout (seconds) [3600]: ").strip() or "3600")
+                        gpu_type = console.input("GPU type (cuda/mps/any) [any]: ").strip() or None
+                        if gpu_type == "any":
+                            gpu_type = None
+                        num_gpus = int(console.input("Number of GPUs [1]: ").strip() or "1")
+                        
+                        estimate = await self.estimate_job_cost(
+                            timeout_seconds=timeout,
+                            required_gpu_type=gpu_type,
+                            num_gpus=num_gpus
+                        )
+                        self.display_cost_estimate(estimate)
+                    except ValueError as e:
+                        console.print(f"[red]Invalid input: {e}[/red]")
+                
+                elif command == "download":
+                    job_id = console.input("Job ID: ").strip()
+                    output_dir = console.input("Output directory [.]: ").strip() or "."
+                    await self.download_output_file(job_id, output_dir)
+
                 elif command == "help":
                     console.print("\n[bold]Available Commands:[/bold]")
-                    console.print("  stats  - Show marketplace statistics")
-                    console.print("  wallet - Show wallet balance and info")
-                    console.print("  submit - Submit a new job to queue")
-                    console.print("  status - Get status of a specific job")
-                    console.print("  list   - List your jobs")
-                    console.print("  cancel - Cancel a pending/claimed job")
-                    console.print("  wait   - Wait for job completion")
-                    console.print("  quit   - Exit CLI\n")
+                    console.print("  stats     - Show marketplace statistics")
+                    console.print("  wallet    - Show wallet balance and info")
+                    console.print("  estimate  - Estimate job cost before submitting")
+                    console.print("  submit    - Submit a new job to queue")
+                    console.print("  templates - List available job templates")
+                    console.print("  template  - Submit job using a template")
+                    console.print("  status    - Get status of a specific job")
+                    console.print("  list      - List your jobs")
+                    console.print("  download  - Download output files from a job")
+                    console.print("  cancel    - Cancel a pending/claimed job")
+                    console.print("  wait      - Wait for job completion")
+                    console.print("  quit      - Exit CLI\n")
 
                 else:
                     console.print(f"[yellow]Unknown command: {command}. Type 'help' for commands.[/yellow]")
@@ -402,6 +584,114 @@ class BuyerCLI:
                 logger.error("cli_error", error=str(e))
 
         await self.client.aclose()
+
+    def display_templates(self):
+        """Display available job templates"""
+        console.print("\n[bold cyan]Available Job Templates[/bold cyan]")
+        console.print("=" * 50)
+        
+        for category in TemplateCategory:
+            templates = list_templates(category)
+            if templates:
+                console.print(f"\n[bold]{category.value.upper()}[/bold]")
+                console.print("-" * 40)
+                
+                for t in templates:
+                    gpu_indicator = "[green]GPU[/green]" if t.gpu_required else "[yellow]CPU[/yellow]"
+                    console.print(f"  [cyan]{t.name}[/cyan] {gpu_indicator}")
+                    console.print(f"    {t.description}")
+                    if t.parameters:
+                        console.print("    Parameters:")
+                        for param, desc in t.parameters.items():
+                            console.print(f"      --{param}: [dim]{desc}[/dim]")
+        
+        console.print("\n[dim]Use 'template' command to submit a job from a template[/dim]\n")
+
+    async def submit_from_template(self):
+        """Submit a job using a template"""
+        # Show available templates
+        all_templates = list_templates()
+        if not all_templates:
+            console.print("[red]No templates available[/red]")
+            return
+        
+        console.print("\n[bold]Available Templates:[/bold]")
+        for i, t in enumerate(all_templates, 1):
+            console.print(f"  {i}. [cyan]{t.name}[/cyan] - {t.description}")
+        
+        # Select template
+        try:
+            choice = console.input("\nSelect template (number or name): ").strip()
+            
+            # Try as number first
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(all_templates):
+                    template = all_templates[idx]
+                else:
+                    console.print("[red]Invalid selection[/red]")
+                    return
+            else:
+                # Try as name
+                template = get_template(choice)
+                if not template:
+                    console.print(f"[red]Template '{choice}' not found[/red]")
+                    return
+            
+            console.print(f"\n[green]Selected: {template.name}[/green]")
+            console.print(f"[dim]{template.description}[/dim]")
+            
+            # Collect parameters
+            params = {}
+            if template.parameters:
+                console.print("\n[bold]Enter parameters:[/bold]")
+                for param, desc in template.parameters.items():
+                    value = console.input(f"  {param} ({desc}): ").strip()
+                    if not value:
+                        console.print(f"[red]Parameter '{param}' is required[/red]")
+                        return
+                    params[param] = value
+            
+            # Render script
+            try:
+                script = render_template(template.name, **params)
+            except Exception as e:
+                console.print(f"[red]Error rendering template: {e}[/red]")
+                return
+            
+            # Show preview
+            console.print("\n[bold]Generated Script Preview:[/bold]")
+            console.print("[dim]" + "-" * 50 + "[/dim]")
+            preview = script[:500] + ("..." if len(script) > 500 else "")
+            console.print(f"[dim]{preview}[/dim]")
+            console.print("[dim]" + "-" * 50 + "[/dim]")
+            
+            # Confirm and submit
+            max_price = float(console.input(f"Max price per hour (USD) [10.0]: ").strip() or "10.0")
+            timeout = int(console.input(f"Timeout (seconds) [{template.default_timeout}]: ").strip() or str(template.default_timeout))
+            
+            gpu_type = None
+            if template.gpu_required:
+                gpu_type = console.input("GPU type (cuda/mps/any) [any]: ").strip() or None
+            
+            confirm = console.input("\nSubmit job? (y/n) [y]: ").strip().lower()
+            if confirm == "n":
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+            
+            wait = console.input("Wait for completion? (y/n) [n]: ").strip().lower() == "y"
+            
+            await self.submit_job(
+                script=script,
+                requirements=template.default_requirements,
+                max_price_per_hour=max_price,
+                timeout_seconds=timeout,
+                required_gpu_type=gpu_type,
+                wait_for_completion=wait
+            )
+            
+        except ValueError as e:
+            console.print(f"[red]Invalid input: {e}[/red]")
 
     async def close(self):
         """Close the HTTP client"""
@@ -441,6 +731,9 @@ async def main():
         elif command == "list":
             await cli.list_my_jobs()
 
+        elif command == "templates":
+            cli.display_templates()
+        
         elif command == "submit" and len(sys.argv) > 2:
             script_path = sys.argv[2]
             try:
@@ -454,8 +747,16 @@ async def main():
                 console.print(f"[red]Script not found: {script_path}[/red]")
 
         else:
-            console.print("[red]Invalid command[/red]")
-            console.print("Usage: python -m src.buyer.cli [stats|wallet|status <job_id>|list|submit <script_path> [--wait]]")
+            console.print("[red]Invalid command or missing arguments[/red]")
+            console.print("\nUsage: python -m src.buyer.cli <command> [args]")
+            console.print("\nCommands:")
+            console.print("  stats                    Show marketplace statistics")
+            console.print("  wallet                   Show wallet balance")
+            console.print("  templates                List available job templates")
+            console.print("  submit <script> [--wait] Submit a job from file")
+            console.print("  status <job_id>          Get job status")
+            console.print("  list                     List your jobs")
+            console.print("\nOr run without arguments for interactive mode.")
 
     else:
         # Interactive mode

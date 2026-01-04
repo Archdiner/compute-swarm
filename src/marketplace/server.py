@@ -341,6 +341,103 @@ async def mark_node_unavailable(node_id: str):
 # Job Management Endpoints (Queue-Based)
 # ============================================================================
 
+@app.post("/api/v1/jobs/estimate")
+@limiter.limit("30/minute")
+async def estimate_job_cost(
+    request: Request,
+    timeout_seconds: int = 3600,
+    required_gpu_type: Optional[str] = None,
+    min_vram_gb: Optional[float] = None,
+    num_gpus: int = 1
+):
+    """
+    Estimate the cost of a job before submission
+    
+    Returns:
+    - Estimated cost range based on available nodes
+    - Number of matching nodes
+    - Estimated wait time
+    """
+    db = get_db_client()
+    
+    # Get matching nodes
+    gpu_type_enum = GPUType(required_gpu_type) if required_gpu_type else None
+    max_price_decimal = None  # No limit for estimation
+    
+    nodes = await db.get_active_nodes(
+        gpu_type=gpu_type_enum,
+        max_price=max_price_decimal
+    )
+    
+    # Filter by VRAM if specified
+    if min_vram_gb:
+        min_vram = Decimal(str(min_vram_gb))
+        nodes = [n for n in nodes if n.get("vram_gb", 0) and Decimal(str(n["vram_gb"])) >= min_vram]
+    
+    # Filter by num_gpus if specified
+    if num_gpus > 1:
+        nodes = [n for n in nodes if n.get("num_gpus", 1) >= num_gpus]
+    
+    if not nodes:
+        return {
+            "estimated": False,
+            "message": "No matching nodes currently available",
+            "matching_nodes": 0,
+            "suggestion": "Try lowering requirements or check back later"
+        }
+    
+    # Calculate cost range
+    prices = [Decimal(str(n["price_per_hour"])) for n in nodes]
+    min_price = min(prices)
+    max_price = max(prices)
+    avg_price = sum(prices) / len(prices)
+    
+    # Calculate costs for the requested duration
+    hours = Decimal(str(timeout_seconds)) / Decimal("3600")
+    
+    min_cost = min_price * hours
+    max_cost = max_price * hours
+    avg_cost = avg_price * hours
+    
+    # Estimate wait time based on queue depth
+    stats = await db.get_queue_stats()
+    pending_count = sum(s["job_count"] for s in stats if s["status"] == "PENDING")
+    
+    # Rough estimate: each pending job takes average 5 minutes
+    estimated_wait_minutes = (pending_count / max(len(nodes), 1)) * 5
+    
+    # Get GPU info from nodes
+    gpu_types_available = list(set(n.get("gpu_type", "unknown") for n in nodes))
+    
+    return {
+        "estimated": True,
+        "cost_estimate": {
+            "min_usd": float(min_cost),
+            "max_usd": float(max_cost),
+            "avg_usd": float(avg_cost),
+            "currency": "USDC"
+        },
+        "hourly_rates": {
+            "min_per_hour": float(min_price),
+            "max_per_hour": float(max_price),
+            "avg_per_hour": float(avg_price)
+        },
+        "matching_nodes": len(nodes),
+        "gpu_types_available": gpu_types_available,
+        "queue": {
+            "pending_jobs": pending_count,
+            "estimated_wait_minutes": round(estimated_wait_minutes, 1)
+        },
+        "request": {
+            "timeout_seconds": timeout_seconds,
+            "timeout_hours": float(hours),
+            "required_gpu_type": required_gpu_type,
+            "min_vram_gb": min_vram_gb,
+            "num_gpus": num_gpus
+        }
+    }
+
+
 @app.post("/api/v1/jobs/submit", status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute", key_func=get_buyer_key)
 async def submit_job(
@@ -663,6 +760,155 @@ async def get_pending_jobs(request: Request, gpu_type: Optional[str] = None, lim
     jobs = await db.get_pending_jobs(gpu_type=gpu_type_enum, limit=limit)
 
     return {"jobs": jobs, "count": len(jobs)}
+
+
+# ============================================================================
+# Seller Earnings & Analytics
+# ============================================================================
+
+@app.get("/api/v1/sellers/{seller_address}/earnings")
+@limiter.limit("60/minute")
+async def get_seller_earnings(
+    request: Request,
+    seller_address: str,
+    days: int = 30
+):
+    """
+    Get seller earnings summary
+    
+    Returns:
+    - Total earnings
+    - Earnings by time period (daily, weekly)
+    - Job statistics
+    """
+    db = get_db_client()
+    
+    # Get completed jobs for this seller
+    jobs = await db.get_jobs_by_seller(
+        seller_address=seller_address,
+        status=JobStatus.COMPLETED,
+        limit=1000
+    )
+    
+    # Calculate earnings
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    cutoff_date = now - timedelta(days=days)
+    
+    total_earnings = Decimal("0")
+    earnings_today = Decimal("0")
+    earnings_week = Decimal("0")
+    earnings_month = Decimal("0")
+    
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=today_start.weekday())
+    month_start = today_start.replace(day=1)
+    
+    jobs_completed = 0
+    total_compute_hours = Decimal("0")
+    
+    for job in jobs:
+        cost = Decimal(str(job.get("total_cost", 0) or 0))
+        total_earnings += cost
+        
+        # Parse completion time
+        completed_at_str = job.get("completed_at")
+        if completed_at_str:
+            try:
+                if isinstance(completed_at_str, str):
+                    completed_at = datetime.fromisoformat(completed_at_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                else:
+                    completed_at = completed_at_str
+                
+                if completed_at >= today_start:
+                    earnings_today += cost
+                if completed_at >= week_start:
+                    earnings_week += cost
+                if completed_at >= month_start:
+                    earnings_month += cost
+            except:
+                pass
+        
+        # Compute time
+        duration = job.get("execution_duration", 0) or 0
+        total_compute_hours += Decimal(str(duration)) / Decimal("3600")
+        jobs_completed += 1
+    
+    # Get active node info
+    nodes = await db.get_active_nodes()
+    seller_nodes = [n for n in nodes if n.get("seller_address") == seller_address]
+    
+    return {
+        "seller_address": seller_address,
+        "earnings": {
+            "total_usd": float(total_earnings),
+            "today_usd": float(earnings_today),
+            "week_usd": float(earnings_week),
+            "month_usd": float(earnings_month),
+            "currency": "USDC"
+        },
+        "jobs": {
+            "total_completed": jobs_completed,
+            "total_compute_hours": float(total_compute_hours),
+            "avg_earnings_per_job": float(total_earnings / max(jobs_completed, 1))
+        },
+        "nodes": {
+            "active_count": len(seller_nodes),
+            "nodes": [
+                {
+                    "node_id": n.get("node_id"),
+                    "gpu_type": n.get("gpu_type"),
+                    "device_name": n.get("device_name"),
+                    "price_per_hour": float(n.get("price_per_hour", 0)),
+                    "is_available": n.get("is_available", False)
+                }
+                for n in seller_nodes
+            ]
+        },
+        "period_days": days,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/api/v1/sellers/{seller_address}/jobs")
+@limiter.limit("100/minute")
+async def get_seller_job_history(
+    request: Request,
+    seller_address: str,
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    Get detailed job history for a seller
+    """
+    db = get_db_client()
+    
+    status_enum = JobStatus(status_filter) if status_filter else None
+    
+    jobs = await db.get_jobs_by_seller(
+        seller_address=seller_address,
+        status=status_enum,
+        limit=limit
+    )
+    
+    # Enrich with summary stats
+    total_earnings = sum(Decimal(str(j.get("total_cost", 0) or 0)) for j in jobs)
+    total_compute_time = sum(j.get("execution_duration", 0) or 0 for j in jobs)
+    
+    return {
+        "seller_address": seller_address,
+        "jobs": jobs,
+        "count": len(jobs),
+        "summary": {
+            "total_earnings_usd": float(total_earnings),
+            "total_compute_seconds": total_compute_time
+        },
+        "pagination": {
+            "limit": limit,
+            "offset": offset
+        }
+    }
 
 
 # ============================================================================
