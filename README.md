@@ -134,6 +134,7 @@ This project is built for the **x402 hackathon** and demonstrates real-world use
 
 ### Prerequisites
 - Python 3.10+
+- Node.js 20+ (for frontend)
 - Docker (for sandboxed execution)
 - NVIDIA GPU with CUDA (or Apple Silicon)
 
@@ -159,6 +160,27 @@ cp .env.example .env
 ```
 
 ### 3. Run the Marketplace
+
+#### Option A: Using Web UI (Recommended)
+
+```bash
+# Terminal 1: Start marketplace server
+python -m src.marketplace.server
+
+# Terminal 2: Start frontend web UI
+cd frontend
+cp .env.local.example .env.local
+# Edit .env.local and add your Privy App ID (get from https://privy.io)
+npm install
+npm run dev
+
+# Terminal 3: Start seller agent (on GPU machine)
+python -m src.seller.agent
+```
+
+Then visit http://localhost:3000 in your browser.
+
+#### Option B: Using CLI
 
 ```bash
 # Terminal 1: Start marketplace server
@@ -223,6 +245,13 @@ python -m src.seller.agent
 
 ```
 compute-swarm/
+├── frontend/            # React web UI with Privy embedded wallets
+│   ├── src/
+│   │   ├── components/  # React components
+│   │   ├── pages/       # Buyer/Seller views
+│   │   ├── services/    # API client, Privy config
+│   │   └── hooks/       # Custom React hooks
+│   └── package.json
 ├── src/
 │   ├── marketplace/     # FastAPI server (job queue, matching, payments)
 │   ├── seller/          # Seller agent (GPU detection, job execution)
@@ -237,10 +266,12 @@ compute-swarm/
 ```
 
 **Tech Stack:**
+- **Frontend**: React, TypeScript, Vite, Privy (embedded wallets), Tailwind CSS
 - **Backend**: FastAPI, Python 3.11
 - **Database**: Supabase (PostgreSQL)
 - **Payments**: x402 SDK, Web3.py, USDC on Base
 - **Compute**: PyTorch, Docker, NVIDIA Container Toolkit
+- **Authentication**: Privy embedded wallets with email/social login
 
 ---
 
@@ -280,7 +311,8 @@ Full API docs at `/docs` when running.
 - [x] Docker sandboxing
 - [x] Job templates
 - [x] Seller earnings dashboard
-- [ ] Web dashboard for buyers
+- [x] Web dashboard for buyers and sellers
+- [x] Privy embedded wallet integration
 - [ ] Reputation system
 - [ ] Spot pricing / auctions
 - [ ] Model marketplace integration
