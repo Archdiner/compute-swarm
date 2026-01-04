@@ -11,7 +11,7 @@ import os
 from supabase import create_client, Client
 from pydantic import BaseModel
 
-from src.models import ComputeNode, ComputeJob, JobStatus, GPUType
+from src.models import ComputeNode, ComputeJob, JobStatus, GPUType, SellerProfile, VerificationStatus
 
 
 class DatabaseClient:
@@ -30,17 +30,24 @@ class DatabaseClient:
         Register or update a compute node
         Uses upsert to handle both new and existing nodes
         """
+        # Convert GPU type to uppercase to match database enum (CUDA, MPS, CPU)
+        gpu_type_upper = node.gpu_info.gpu_type.value.upper()
+        
         node_data = {
             "node_id": node.node_id,
             "seller_address": node.seller_address,
-            "gpu_type": node.gpu_info.gpu_type.value,
+            "gpu_type": gpu_type_upper,
             "device_name": node.gpu_info.device_name,
             "vram_gb": float(node.gpu_info.vram_gb) if node.gpu_info.vram_gb else None,
+            "num_gpus": node.gpu_info.num_gpus if hasattr(node.gpu_info, 'num_gpus') else 1,
             "compute_capability": node.gpu_info.compute_capability,
             "price_per_hour": float(node.price_per_hour),
             "is_available": node.is_available,
             "last_heartbeat": datetime.utcnow().isoformat(),
         }
+
+        if node.seller_profile_id:
+            node_data["seller_profile_id"] = node.seller_profile_id
 
         result = self.client.table("compute_nodes").upsert(node_data).execute()
         return node
@@ -101,8 +108,9 @@ class DatabaseClient:
             "requirements": job.requirements,
             "max_price_per_hour": float(job.max_price_per_hour),
             "timeout_seconds": job.timeout_seconds,
-            "required_gpu_type": job.required_gpu_type.value if job.required_gpu_type else None,
+            "required_gpu_type": job.required_gpu_type.value.upper() if job.required_gpu_type else None,
             "min_vram_gb": float(job.min_vram_gb) if job.min_vram_gb else None,
+            "num_gpus": job.num_gpus,
             "status": "PENDING"
         }
 
@@ -115,7 +123,8 @@ class DatabaseClient:
         seller_address: str,
         gpu_type: GPUType,
         price_per_hour: Decimal,
-        vram_gb: Decimal
+        vram_gb: Decimal,
+        num_gpus: int = 1
     ) -> Optional[Dict[str, Any]]:
         """
         Atomically claim the next available job that matches seller's capabilities
@@ -126,13 +135,19 @@ class DatabaseClient:
             {
                 "p_node_id": node_id,
                 "p_seller_address": seller_address,
-                "p_gpu_type": gpu_type.value,
+                "p_gpu_type": gpu_type.value.upper(),  # Convert to uppercase for database enum
                 "p_price_per_hour": float(price_per_hour),
-                "p_vram_gb": float(vram_gb)
+                "p_vram_gb": float(vram_gb),
+                "p_num_gpus": num_gpus
             }
         ).execute()
 
-        return result.data[0] if result.data else None
+        if result.data:
+            job_data = result.data[0]
+            # Fetch full job details including job_type and docker_image
+            full_job = await self.get_job(job_data["job_id"])
+            return full_job
+        return None
 
     async def start_job_execution(self, job_id: str) -> None:
         """Mark job as executing"""
@@ -278,6 +293,75 @@ class DatabaseClient:
         """Get state transition history for a job (audit trail)"""
         result = self.client.table("job_state_transitions").select("*").eq("job_id", job_id).order("transitioned_at").execute()
         return result.data
+
+    # ===== SELLER PROFILE OPERATIONS =====
+
+    async def get_seller_profile(self, seller_address: str) -> Optional[Dict[str, Any]]:
+        """Get seller profile by address"""
+        result = self.client.table("seller_profiles").select("*").eq(
+            "seller_address", seller_address.lower()
+        ).execute()
+        return result.data[0] if result.data else None
+
+    async def upsert_seller_profile_from_github(
+        self,
+        seller_address: str,
+        github_id: int,
+        github_username: str,
+        github_avatar_url: Optional[str] = None,
+        github_profile_url: Optional[str] = None
+    ) -> str:
+        """Create or update seller profile with GitHub verification"""
+        profile_data = {
+            "seller_address": seller_address.lower(),
+            "github_id": github_id,
+            "github_username": github_username,
+            "github_avatar_url": github_avatar_url,
+            "github_profile_url": github_profile_url,
+            "verification_status": "verified",
+            "verified_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        result = self.client.table("seller_profiles").upsert(
+            profile_data, 
+            on_conflict="seller_address"
+        ).execute()
+        
+        return result.data[0]["id"] if result.data else None
+
+    async def update_seller_profile(
+        self,
+        seller_address: str,
+        updates: Dict[str, Any]
+    ) -> None:
+        """Update seller profile fields"""
+        updates["updated_at"] = datetime.utcnow().isoformat()
+        self.client.table("seller_profiles").update(updates).eq(
+            "seller_address", seller_address.lower()
+        ).execute()
+
+    async def add_seller_rating(
+        self,
+        job_id: str,
+        buyer_address: str,
+        seller_address: str,
+        rating: int,
+        comment: Optional[str] = None
+    ) -> str:
+        """Add a rating for a seller and update their reputation score"""
+        rating_data = {
+            "job_id": job_id,
+            "buyer_address": buyer_address.lower(),
+            "seller_address": seller_address.lower(),
+            "rating": rating,
+            "comment": comment
+        }
+        
+        result = self.client.table("seller_ratings").insert(rating_data).execute()
+        
+        # Update seller's reputation score (trigger should handle this, but we can do it here too)
+        return result.data[0]["id"] if result.data else None
 
 
 # Singleton instance

@@ -3,9 +3,14 @@ ComputeSwarm Configuration Management
 Uses pydantic-settings for type-safe environment variable loading
 """
 
+import os
+from dotenv import load_dotenv
 from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env file globally so os.getenv() works everywhere
+load_dotenv()
 
 
 class MarketplaceConfig(BaseSettings):
@@ -68,6 +73,46 @@ class MarketplaceConfig(BaseSettings):
     cdp_api_key: str = Field(default="")
     cdp_api_secret: str = Field(default="")
 
+    # GitHub OAuth Configuration (for seller verification)
+    github_client_id: str = Field(default="", description="GitHub OAuth App client ID")
+    github_client_secret: str = Field(default="", description="GitHub OAuth App client secret")
+    github_callback_url: str = Field(
+        default="http://localhost:8000/auth/github/callback",
+        description="GitHub OAuth callback URL"
+    )
+
+    # Supabase Configuration
+    supabase_url: str = Field(default="", description="Supabase project URL")
+    supabase_anon_key: str = Field(default="", description="Supabase anonymous key")
+
+    # Supabase Storage Configuration
+    supabase_storage_bucket: str = Field(
+        default="job-files",
+        description="Supabase storage bucket for job files"
+    )
+    file_expiry_hours: int = Field(
+        default=24,
+        description="Hours before uploaded files expire"
+    )
+    max_file_size_mb: int = Field(
+        default=100,
+        description="Maximum file size in MB"
+    )
+
+    # Session Configuration
+    default_session_duration_minutes: int = Field(
+        default=60,
+        description="Default notebook/container session duration"
+    )
+    max_session_duration_minutes: int = Field(
+        default=480,
+        description="Maximum session duration (8 hours)"
+    )
+    session_heartbeat_interval: int = Field(
+        default=60,
+        description="Session heartbeat interval in seconds"
+    )
+
 
 class SellerConfig(BaseSettings):
     """Configuration for Seller Agent"""
@@ -92,7 +137,9 @@ class SellerConfig(BaseSettings):
 
     # Compute Configuration
     max_concurrent_jobs: int = Field(default=1, description="Max simultaneous compute jobs")
-    job_timeout: int = Field(default=3600, description="Max job duration in seconds")
+    job_timeout: int = Field(default=3600, description="Max job duration in seconds (batch jobs)")
+    notebook_timeout: int = Field(default=7200, description="Max notebook session duration in seconds (2 hours)")
+    container_timeout: int = Field(default=10800, description="Max container session duration in seconds (3 hours)")
     
     # Docker Sandboxing Configuration
     docker_enabled: bool = Field(default=True, description="Enable Docker sandboxing for job execution")
@@ -111,6 +158,30 @@ class SellerConfig(BaseSettings):
     testnet_mode: bool = Field(
         default=True, 
         description="Use simulated payments (testnet) or real transfers (production)"
+    )
+
+    # Session Configuration
+    jupyter_docker_image: str = Field(
+        default="jupyter/scipy-notebook:latest",
+        description="Docker image for Jupyter notebook sessions"
+    )
+    jupyter_port_range_start: int = Field(
+        default=8888,
+        description="Starting port for Jupyter sessions"
+    )
+    jupyter_port_range_end: int = Field(
+        default=8988,
+        description="Ending port for Jupyter sessions"
+    )
+    allowed_docker_registries: list[str] = Field(
+        default=["docker.io", "ghcr.io", "computeswarm"],
+        description="Allowed Docker registries for custom containers"
+    )
+
+    # Public URL for session access (set to ngrok URL if using tunneling)
+    public_host: str = Field(
+        default="localhost",
+        description="Public hostname for session URLs"
     )
 
     @field_validator("seller_private_key")

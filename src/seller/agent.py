@@ -186,7 +186,8 @@ class SellerAgent:
                     "seller_address": self.config.seller_address,
                     "gpu_type": self.gpu_info.gpu_type.value,
                     "price_per_hour": float(self.price_per_hour),
-                    "vram_gb": float(self.gpu_info.vram_gb) if self.gpu_info.vram_gb else 0.0
+                    "vram_gb": float(self.gpu_info.vram_gb) if self.gpu_info.vram_gb else 0.0,
+                    "num_gpus": self.gpu_info.num_gpus if hasattr(self.gpu_info, 'num_gpus') else 1
                 }
             )
             response.raise_for_status()

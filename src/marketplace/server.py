@@ -351,7 +351,8 @@ async def submit_job(
     max_price_per_hour: float = 10.0,
     timeout_seconds: int = 3600,
     required_gpu_type: Optional[str] = None,
-    min_vram_gb: Optional[float] = None
+    min_vram_gb: Optional[float] = None,
+    num_gpus: int = 1
 ):
     """
     Submit a job to the queue
@@ -368,7 +369,8 @@ async def submit_job(
         max_price_per_hour=Decimal(str(max_price_per_hour)),
         timeout_seconds=timeout_seconds,
         required_gpu_type=GPUType(required_gpu_type) if required_gpu_type else None,
-        min_vram_gb=Decimal(str(min_vram_gb)) if min_vram_gb else None
+        min_vram_gb=Decimal(str(min_vram_gb)) if min_vram_gb else None,
+        num_gpus=num_gpus
     )
 
     job_id = await db.submit_job(job)
@@ -398,7 +400,8 @@ async def claim_job(
     seller_address: str,
     gpu_type: str,
     price_per_hour: float,
-    vram_gb: float
+    vram_gb: float,
+    num_gpus: int = 1
 ):
     """
     Claim the next available job from queue (Seller endpoint)
@@ -421,7 +424,8 @@ async def claim_job(
         seller_address=seller_address,
         gpu_type=gpu_type_enum,
         price_per_hour=Decimal(str(price_per_hour)),
-        vram_gb=Decimal(str(vram_gb))
+        vram_gb=Decimal(str(vram_gb)),
+        num_gpus=num_gpus
     )
 
     if not job:
@@ -443,7 +447,9 @@ async def claim_job(
         "script": job["script"],
         "requirements": job["requirements"],
         "timeout_seconds": job["timeout_seconds"],
-        "max_price_per_hour": float(job["max_price_per_hour"])
+        "max_price_per_hour": float(job["max_price_per_hour"]),
+        "buyer_address": job.get("buyer_address", ""),
+        "num_gpus": job.get("num_gpus", 1)
     }
 
 
