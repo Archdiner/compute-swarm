@@ -25,5 +25,5 @@ EXPOSE $PORT
 
 # Railway handles health checks automatically via HTTP to /health
 
-# Start command
-CMD uvicorn src.marketplace.server:app --host 0.0.0.0 --port $PORT --workers 1
+# Start command (Railway sets PORT environment variable)
+CMD ["sh", "-c", "uvicorn src.marketplace.server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
