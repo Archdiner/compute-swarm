@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "gfortran", "blas", "lapack"]
+
+[phases.install]
+cmds = [
+  "python -m pip install --upgrade pip",
+  "python -m pip install -r requirements-server.txt"
+]
+
+[start]
+cmd = "uvicorn src.marketplace.server:app --host 0.0.0.0 --port $PORT"
