@@ -52,6 +52,15 @@ class SessionStatus(str, Enum):
     FAILED = "failed"
 
 
+class FileType(str, Enum):
+    """Types of files attached to jobs"""
+    INPUT = "input"
+    OUTPUT = "output"
+    CHECKPOINT = "checkpoint"
+    MODEL = "model"
+    DATASET = "dataset"
+
+
 class GPUInfo(BaseModel):
     """GPU hardware information"""
     gpu_type: GPUType
@@ -264,3 +273,53 @@ class SessionResponse(BaseModel):
     expires_at: Optional[datetime] = None
     billed_minutes: int = 0
     total_cost_usd: float = 0.0
+
+
+class JobFile(BaseModel):
+    """File attachment for a job"""
+    id: Optional[str] = None
+    job_id: str
+    
+    # File details
+    file_type: FileType
+    file_name: str
+    storage_path: str
+    file_size_bytes: int
+    mime_type: Optional[str] = None
+    checksum: Optional[str] = None
+    
+    # Metadata
+    uploaded_by: str
+    description: Optional[str] = None
+    
+    # Timestamps
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    @field_validator('file_size_bytes')
+    @classmethod
+    def validate_file_size(cls, v):
+        if v <= 0:
+            raise ValueError('File size must be positive')
+        return v
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
+class FileUploadRequest(BaseModel):
+    """Request for file upload URL"""
+    job_id: str
+    file_name: str
+    file_type: FileType
+    file_size_bytes: int
+    mime_type: Optional[str] = None
+
+
+class FileUploadResponse(BaseModel):
+    """Response with pre-signed upload URL"""
+    file_id: str
+    upload_url: str
+    expires_at: datetime
