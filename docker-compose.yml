@@ -19,8 +19,25 @@ services:
       - NETWORK=base-sepolia
       - SELLER_PRIVATE_KEY=${SELLER_PRIVATE_KEY}
       - BUYER_PRIVATE_KEY=${BUYER_PRIVATE_KEY}
+      
+      # Frontend URL for CORS
+      - FRONTEND_URL=http://localhost:3000
     env_file:
       - .env
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_PRIVY_APP_ID=${VITE_PRIVY_APP_ID}
+      - VITE_BACKEND_URL=http://marketplace:8000
+      - VITE_NETWORK=${VITE_NETWORK:-base-sepolia}
+    depends_on:
+      - marketplace
     restart: unless-stopped
 
 # Note: No database or redis containers needed!
