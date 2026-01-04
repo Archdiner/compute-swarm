@@ -3,6 +3,7 @@ ComputeSwarm Marketplace Server
 Queue-based job marketplace with Supabase database
 """
 
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -181,9 +182,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware with configurable origins
 config = get_marketplace_config()
+# Default frontend origins for development
+default_origins = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"]
+cors_origins = config.cors_origins if config.cors_origins else default_origins
+
+# Add frontend URL from environment if provided
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url and frontend_url not in cors_origins:
+    cors_origins.append(frontend_url)
+
+logger.info("cors_origins_configured", origins=cors_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.cors_origins,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

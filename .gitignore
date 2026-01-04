@@ -83,6 +83,11 @@ Thumbs.db
 node_modules/
 .ngrok/
 
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/
+frontend/.env.local
+
 # Secrets (extra safety)
 *private_key*
 *secret*
