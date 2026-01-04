@@ -1,6 +1,7 @@
 """
 Secure job execution engine
 Executes Python scripts in isolated Docker containers with safety controls
+Supports GPU passthrough for CUDA workloads
 """
 
 import asyncio
@@ -9,7 +10,7 @@ import tempfile
 import os
 import signal
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 from dataclasses import dataclass
 from decimal import Decimal
 import time
@@ -17,6 +18,9 @@ import time
 import structlog
 
 logger = structlog.get_logger()
+
+# GPU type for execution context
+GPUExecutionType = Literal["cuda", "mps", "cpu", "none"]
 
 
 @dataclass
@@ -52,10 +56,13 @@ class JobExecutor:
         max_output_size: int = 1024 * 1024,  # 1MB
         docker_enabled: bool = True,
         docker_image: str = "computeswarm-sandbox:latest",
+        docker_image_gpu: str = "computeswarm-sandbox-gpu:latest",
         docker_memory_limit: str = "4g",
         docker_cpu_limit: float = 2.0,
         docker_pids_limit: int = 100,
-        docker_tmpfs_size: str = "1g"
+        docker_tmpfs_size: str = "1g",
+        model_cache_dir: Optional[Path] = None,
+        gpu_type: GPUExecutionType = "none"
     ):
         """
         Initialize executor
@@ -64,24 +71,34 @@ class JobExecutor:
             workspace_dir: Directory for temporary files (default: system temp)
             max_output_size: Maximum output size in bytes
             docker_enabled: Whether to use Docker sandboxing
-            docker_image: Docker image to use for sandboxed execution
+            docker_image: Docker image for CPU sandboxed execution
+            docker_image_gpu: Docker image for GPU sandboxed execution (CUDA)
             docker_memory_limit: Memory limit for containers (e.g., "4g")
             docker_cpu_limit: CPU limit for containers
             docker_pids_limit: Maximum number of processes in container
             docker_tmpfs_size: Size of tmpfs mount for /tmp
+            model_cache_dir: Directory for persistent model cache (HuggingFace, etc.)
+            gpu_type: GPU type for execution ("cuda", "mps", "cpu", "none")
         """
         self.workspace_dir = workspace_dir or Path(tempfile.gettempdir()) / "computeswarm"
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.max_output_size = max_output_size
         self.docker_enabled = docker_enabled
         self.docker_image = docker_image
+        self.docker_image_gpu = docker_image_gpu
         self.docker_memory_limit = docker_memory_limit
         self.docker_cpu_limit = docker_cpu_limit
         self.docker_pids_limit = docker_pids_limit
         self.docker_tmpfs_size = docker_tmpfs_size
+        self.gpu_type = gpu_type
+        
+        # Model cache directory for persistent caching
+        self.model_cache_dir = model_cache_dir or Path.home() / ".cache" / "computeswarm"
+        self.model_cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Check Docker availability on init
         self._docker_available: Optional[bool] = None
+        self._nvidia_docker_available: Optional[bool] = None
 
     async def _check_docker_available(self) -> bool:
         """Check if Docker is available and running"""
@@ -108,11 +125,12 @@ class JobExecutor:
             
         return self._docker_available
 
-    async def _check_docker_image_exists(self) -> bool:
-        """Check if the sandbox Docker image exists"""
+    async def _check_docker_image_exists(self, image: Optional[str] = None) -> bool:
+        """Check if a Docker image exists"""
+        image = image or self.docker_image
         try:
             process = await asyncio.create_subprocess_exec(
-                "docker", "image", "inspect", self.docker_image,
+                "docker", "image", "inspect", image,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -121,12 +139,60 @@ class JobExecutor:
         except Exception:
             return False
 
+    async def _check_nvidia_docker_available(self) -> bool:
+        """Check if nvidia-docker (GPU support) is available"""
+        if self._nvidia_docker_available is not None:
+            return self._nvidia_docker_available
+        
+        try:
+            # Try to run a simple GPU container
+            process = await asyncio.create_subprocess_exec(
+                "docker", "run", "--rm", "--gpus", "all",
+                "nvidia/cuda:12.1.0-base-ubuntu22.04",
+                "nvidia-smi", "--query-gpu=name", "--format=csv,noheader",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=30
+            )
+            self._nvidia_docker_available = process.returncode == 0
+            
+            if self._nvidia_docker_available:
+                gpu_name = stdout.decode().strip().split('\n')[0]
+                logger.info("nvidia_docker_available", gpu=gpu_name)
+            else:
+                logger.warning("nvidia_docker_not_available", 
+                             message="nvidia-docker check failed",
+                             stderr=stderr.decode()[:200])
+                
+        except asyncio.TimeoutError:
+            self._nvidia_docker_available = False
+            logger.warning("nvidia_docker_timeout", message="GPU check timed out")
+        except FileNotFoundError:
+            self._nvidia_docker_available = False
+            logger.warning("nvidia_docker_not_found", message="Docker not found")
+        except Exception as e:
+            self._nvidia_docker_available = False
+            logger.warning("nvidia_docker_check_failed", error=str(e))
+            
+        return self._nvidia_docker_available
+    
+    def _get_effective_docker_image(self) -> str:
+        """Get the appropriate Docker image based on GPU type"""
+        if self.gpu_type == "cuda":
+            return self.docker_image_gpu
+        return self.docker_image
+
     async def execute_job(
         self,
         job_id: str,
         script: str,
         requirements: Optional[str] = None,
-        timeout_seconds: int = 3600
+        timeout_seconds: int = 3600,
+        gpu_type: Optional[GPUExecutionType] = None,
+        num_gpus: int = 1
     ) -> ExecutionResult:
         """
         Execute a Python job with safety controls
@@ -136,11 +202,15 @@ class JobExecutor:
             script: Python script to execute
             requirements: Optional pip requirements (e.g., "numpy==1.24.0\\ntorch==2.1.0")
             timeout_seconds: Maximum execution time
+            gpu_type: Override GPU type for this job (defaults to executor's gpu_type)
+            num_gpus: Number of GPUs to allocate (for multi-GPU jobs)
 
         Returns:
             ExecutionResult with output and status
         """
-        logger.info("job_execution_started", job_id=job_id, timeout=timeout_seconds)
+        effective_gpu_type = gpu_type or self.gpu_type
+        logger.info("job_execution_started", job_id=job_id, timeout=timeout_seconds, 
+                   gpu_type=effective_gpu_type, num_gpus=num_gpus)
         start_time = time.time()
 
         # Create isolated workspace for this job
@@ -151,22 +221,43 @@ class JobExecutor:
             # Determine execution mode
             use_docker = self.docker_enabled and await self._check_docker_available()
             
-            if use_docker and not await self._check_docker_image_exists():
+            # Select appropriate image based on GPU type
+            if effective_gpu_type == "cuda":
+                docker_image = self.docker_image_gpu
+            else:
+                docker_image = self.docker_image
+            
+            if use_docker and not await self._check_docker_image_exists(docker_image):
                 logger.warning(
                     "docker_image_not_found",
-                    image=self.docker_image,
+                    image=docker_image,
                     message="Falling back to subprocess execution"
                 )
                 use_docker = False
             
+            # Check nvidia-docker for GPU jobs
+            use_gpu = False
+            if use_docker and effective_gpu_type == "cuda":
+                if await self._check_nvidia_docker_available():
+                    use_gpu = True
+                else:
+                    logger.warning(
+                        "nvidia_docker_unavailable",
+                        message="GPU requested but nvidia-docker not available, running on CPU"
+                    )
+            
             if use_docker:
-                logger.info("using_docker_execution", job_id=job_id, image=self.docker_image)
+                logger.info("using_docker_execution", job_id=job_id, image=docker_image, 
+                           gpu_enabled=use_gpu, num_gpus=num_gpus)
                 result = await self._run_in_docker(
                     job_id=job_id,
                     workspace=job_workspace,
                     script=script,
                     requirements=requirements,
-                    timeout=timeout_seconds
+                    timeout=timeout_seconds,
+                    docker_image=docker_image,
+                    use_gpu=use_gpu,
+                    num_gpus=num_gpus
                 )
             else:
                 logger.info("using_subprocess_execution", job_id=job_id)
@@ -231,7 +322,10 @@ class JobExecutor:
         workspace: Path,
         script: str,
         requirements: Optional[str],
-        timeout: int
+        timeout: int,
+        docker_image: Optional[str] = None,
+        use_gpu: bool = False,
+        num_gpus: int = 1
     ) -> ExecutionResult:
         """
         Run Python script in a Docker container with full sandboxing
@@ -245,8 +339,13 @@ class JobExecutor:
         - --pids-limit: Process limit
         - --security-opt no-new-privileges: Prevent privilege escalation
         - --user: Run as non-root
+        
+        GPU support:
+        - --gpus: Pass through NVIDIA GPUs when available
+        - Model cache volume for persistent caching
         """
         container_name = f"computeswarm_job_{job_id.replace('-', '_')}"
+        effective_image = docker_image or self.docker_image
         
         # Write script to workspace
         script_file = workspace / "job_script.py"
@@ -264,15 +363,38 @@ class JobExecutor:
             "--name", container_name,
             "--network", "none",  # No network access
             "--read-only",  # Read-only filesystem
-            f"--tmpfs", f"/tmp:size={self.docker_tmpfs_size},noexec",  # Writable /tmp with noexec
-            f"--memory", self.docker_memory_limit,
-            f"--cpus", str(self.docker_cpu_limit),
-            f"--pids-limit", str(self.docker_pids_limit),
+            "--tmpfs", f"/tmp:size={self.docker_tmpfs_size}",  # Writable /tmp
+            "--memory", self.docker_memory_limit,
+            "--cpus", str(self.docker_cpu_limit),
+            "--pids-limit", str(self.docker_pids_limit),
             "--security-opt", "no-new-privileges",  # Prevent privilege escalation
-            "-v", f"{workspace.absolute()}:/workspace:ro",  # Mount workspace read-only
-            "-w", "/workspace",
-            self.docker_image,
         ]
+        
+        # Add GPU passthrough if requested and available
+        if use_gpu:
+            if num_gpus >= 8 or num_gpus == 0:
+                # Use all GPUs
+                cmd.extend(["--gpus", "all"])
+            else:
+                # Specify GPU count
+                cmd.extend(["--gpus", f'"device={",".join(str(i) for i in range(num_gpus))}"'])
+            logger.info("gpu_passthrough_enabled", num_gpus=num_gpus, job_id=job_id)
+        
+        # Mount model cache for persistent caching (read-write for downloads)
+        # This significantly speeds up repeated runs with same models
+        cmd.extend([
+            "-v", f"{self.model_cache_dir.absolute()}:/root/.cache:rw",
+            "-e", "HF_HOME=/root/.cache/huggingface",
+            "-e", "TORCH_HOME=/root/.cache/torch",
+            "-e", "TRANSFORMERS_CACHE=/root/.cache/huggingface/transformers",
+        ])
+        
+        # Mount workspace read-only and set working directory
+        cmd.extend([
+            "-v", f"{workspace.absolute()}:/workspace:ro",
+            "-w", "/workspace",
+            effective_image,
+        ])
         
         # If requirements specified, install them first then run script
         if requirements:
@@ -290,7 +412,8 @@ python3 /workspace/job_script.py
         else:
             cmd.extend(["python3", "/workspace/job_script.py"])
         
-        logger.info("docker_container_starting", container_name=container_name, job_id=job_id)
+        logger.info("docker_container_starting", container_name=container_name, job_id=job_id,
+                   image=effective_image, gpu=use_gpu)
         
         process = await asyncio.create_subprocess_exec(
             *cmd,

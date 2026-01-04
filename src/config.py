@@ -143,11 +143,22 @@ class SellerConfig(BaseSettings):
     
     # Docker Sandboxing Configuration
     docker_enabled: bool = Field(default=True, description="Enable Docker sandboxing for job execution")
-    docker_image: str = Field(default="computeswarm-sandbox:latest", description="Docker image for sandboxed execution")
+    docker_image: str = Field(default="computeswarm-sandbox:latest", description="Docker image for CPU sandboxed execution")
+    docker_image_gpu: str = Field(default="computeswarm-sandbox-gpu:latest", description="Docker image for GPU (CUDA) sandboxed execution")
     docker_memory_limit: str = Field(default="4g", description="Memory limit for Docker containers")
     docker_cpu_limit: float = Field(default=2.0, description="CPU limit for Docker containers")
     docker_pids_limit: int = Field(default=100, description="Process limit for Docker containers")
     docker_tmpfs_size: str = Field(default="1g", description="Size of tmpfs mount in containers")
+    
+    # Model Cache Configuration (for persistent HuggingFace/PyTorch model caching)
+    model_cache_dir: str = Field(
+        default="~/.cache/computeswarm",
+        description="Directory for persistent model cache (HuggingFace, PyTorch, etc.)"
+    )
+    model_cache_enabled: bool = Field(
+        default=True,
+        description="Enable persistent model caching across jobs"
+    )
 
     # Network Configuration
     network: Literal["base-sepolia", "base-mainnet"] = Field(default="base-sepolia")
