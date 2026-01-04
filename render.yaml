@@ -1,0 +1,30 @@
+# Render Blueprint - Deploy with one click
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: computeswarm-marketplace
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-server.txt
+    startCommand: uvicorn src.marketplace.server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: NETWORK
+        value: base-sepolia
+      - key: RPC_URL
+        value: https://sepolia.base.org
+      - key: TESTNET_MODE
+        value: "true"
+      - key: MARKETPLACE_HOST
+        value: "0.0.0.0"
+      - key: LOG_LEVEL
+        value: INFO
+    healthCheckPath: /health
+
