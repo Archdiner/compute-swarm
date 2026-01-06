@@ -1,15 +1,7 @@
--- Migration: Add num_gpus column to jobs and compute_nodes tables
+-- Quick Fix: Update claim_job function to fix enum casting issue
 -- Run this in Supabase SQL Editor
+-- This fixes the error: "function upper(gpu_type) does not exist"
 
--- Add num_gpus column to jobs table
-ALTER TABLE jobs 
-ADD COLUMN IF NOT EXISTS num_gpus INTEGER DEFAULT 1 CHECK (num_gpus >= 1 AND num_gpus <= 8);
-
--- Add num_gpus column to compute_nodes table  
-ALTER TABLE compute_nodes
-ADD COLUMN IF NOT EXISTS num_gpus INTEGER DEFAULT 1 CHECK (num_gpus >= 1);
-
--- Update the claim_job function to check GPU availability
 CREATE OR REPLACE FUNCTION claim_job(
     p_node_id TEXT,
     p_seller_address TEXT,
@@ -18,7 +10,16 @@ CREATE OR REPLACE FUNCTION claim_job(
     p_vram_gb NUMERIC,
     p_num_gpus INTEGER DEFAULT 1
 )
-RETURNS TABLE (job_id TEXT, script TEXT, requirements TEXT, timeout_seconds INTEGER, max_price_per_hour NUMERIC, buyer_address TEXT, job_type TEXT, docker_image TEXT) AS $$
+RETURNS TABLE (
+    job_id TEXT,
+    script TEXT,
+    requirements TEXT,
+    timeout_seconds INTEGER,
+    max_price_per_hour NUMERIC,
+    buyer_address TEXT,
+    job_type TEXT,
+    docker_image TEXT
+) AS $$
 DECLARE
     claimed_job RECORD;
 BEGIN
@@ -33,10 +34,11 @@ BEGIN
         SELECT j2.job_id
         FROM jobs j2
         WHERE j2.status = 'PENDING'
+        -- FIX: Cast enum to TEXT before using UPPER()
         AND (j2.required_gpu_type IS NULL OR UPPER(j2.required_gpu_type::TEXT) = UPPER(p_gpu_type))
         AND j2.max_price_per_hour >= p_price_per_hour
         AND (j2.min_vram_gb IS NULL OR j2.min_vram_gb <= p_vram_gb)
-        AND (j2.num_gpus IS NULL OR j2.num_gpus <= p_num_gpus)  -- Check GPU count
+        AND (j2.num_gpus IS NULL OR j2.num_gpus <= p_num_gpus)
         ORDER BY j2.created_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -45,7 +47,7 @@ BEGIN
     
     IF claimed_job IS NOT NULL THEN
         RETURN QUERY SELECT 
-            claimed_job.job_id,
+            claimed_job.job_id::TEXT,
             claimed_job.script,
             claimed_job.requirements,
             claimed_job.timeout_seconds,
@@ -57,5 +59,3 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Add index for efficient job claiming by GPU count
-CREATE INDEX IF NOT EXISTS idx_jobs_num_gpus ON jobs(num_gpus) WHERE status = 'PENDING';
