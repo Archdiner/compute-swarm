@@ -5,13 +5,20 @@ Queue-based job submission, monitoring, and x402 payment handling
 
 import asyncio
 import sys
+import time
 from typing import Optional
 import httpx
 import structlog
 from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.panel import Panel
+from rich.layout import Layout
+from rich.live import Live
+from rich.text import Text
+from rich.columns import Columns
+from rich.align import Align
 
 from src.marketplace.models import GPUType
 from src.config import get_buyer_config
@@ -299,14 +306,19 @@ class BuyerCLI:
 
             logger.info("job_submitted_to_queue", job_id=job_id)
 
-            console.print(f"\n[green]✓ Job submitted to queue[/green]")
-            console.print(f"Job ID: [cyan]{job_id}[/cyan]")
-            console.print(f"Max Price: ${max_price_per_hour}/hr")
-            console.print(f"Status: {data['status']}")
+            # Create submission success panel
+            success_content = f"""[bold]Job ID:[/bold] [cyan]{job_id}[/cyan]
+[bold]Status:[/bold] [yellow]{data['status']}[/yellow]
+[bold]Max Price:[/bold] ${max_price_per_hour}/hr
+[bold]Timeout:[/bold] {timeout_seconds}s"""
+            
+            console.print("\n")
+            console.print(Panel(success_content, title="✓ Job Submitted", border_style="green"))
+            console.print(f"[dim]Job submitted to queue. Sellers will claim when available.[/dim]\n")
 
             if wait_for_completion:
-                console.print("\n[yellow]Waiting for job to complete...[/yellow]")
-                await self.wait_for_job(job_id)
+                console.print("[yellow]Starting live monitoring...[/yellow]\n")
+                await self.wait_for_job(job_id, live_view=True)
 
             return job_id
 
@@ -329,9 +341,9 @@ class BuyerCLI:
             return None
 
     def display_job_status(self, job):
-        """Display job status in a formatted way"""
+        """Display job status in a formatted way with rich panels"""
         if not job:
-            console.print("[yellow]Job not found[/yellow]")
+            console.print(Panel("[yellow]Job not found[/yellow]", title="Error", border_style="red"))
             return
 
         status = job["status"]
@@ -343,67 +355,224 @@ class BuyerCLI:
             "FAILED": "red",
             "CANCELLED": "magenta"
         }
-
-        console.print("\n[bold]Job Details[/bold]")
-        console.print(f"Job ID: [cyan]{job['job_id']}[/cyan]")
-        console.print(f"Status: [{status_colors.get(status, 'white')}]{status}[/]")
-        console.print(f"Buyer: {job['buyer_address']}")
-        console.print(f"Max Price: ${job['max_price_per_hour']}/hr")
-        console.print(f"Timeout: {job['timeout_seconds']}s")
-
+        status_color = status_colors.get(status, "white")
+        
+        # Create main info panel
+        info_lines = []
+        info_lines.append(f"[bold]Job ID:[/bold] [cyan]{job['job_id']}[/cyan]")
+        info_lines.append(f"[bold]Status:[/bold] [{status_color}]{status}[/]")
+        info_lines.append(f"[bold]Buyer:[/bold] {job['buyer_address'][:20]}...")
+        info_lines.append(f"[bold]Max Price:[/bold] ${job['max_price_per_hour']}/hr")
+        info_lines.append(f"[bold]Timeout:[/bold] {job['timeout_seconds']}s")
+        
         if job.get("seller_address"):
-            console.print(f"Seller: {job['seller_address']}")
-            console.print(f"Node: {job['node_id']}")
-
+            info_lines.append(f"[bold]Seller:[/bold] {job['seller_address'][:20]}...")
+        if job.get("node_id"):
+            info_lines.append(f"[bold]Node:[/bold] {job['node_id'][:20]}...")
+        
+        info_panel = Panel("\n".join(info_lines), title="Job Information", border_style=status_color)
+        
+        # Create timeline panel
+        timeline_lines = []
         if job.get("created_at"):
-            console.print(f"Created: {job['created_at']}")
+            timeline_lines.append(f"[green]✓ Created:[/green] {job['created_at']}")
         if job.get("claimed_at"):
-            console.print(f"Claimed: {job['claimed_at']}")
+            timeline_lines.append(f"[blue]✓ Claimed:[/blue] {job['claimed_at']}")
         if job.get("started_at"):
-            console.print(f"Started: {job['started_at']}")
+            timeline_lines.append(f"[cyan]⚡ Started:[/cyan] {job['started_at']}")
         if job.get("completed_at"):
-            console.print(f"Completed: {job['completed_at']}")
-
+            timeline_lines.append(f"[green]✓ Completed:[/green] {job['completed_at']}")
+        
+        timeline_panel = Panel("\n".join(timeline_lines) if timeline_lines else "[dim]No timeline data[/dim]", 
+                               title="Timeline", border_style="blue")
+        
+        # Create payment panel
+        payment_lines = []
         if job.get("execution_duration_seconds"):
-            console.print(f"Duration: {job['execution_duration_seconds']:.2f}s")
+            payment_lines.append(f"[bold]Duration:[/bold] {job['execution_duration_seconds']:.2f}s")
         if job.get("total_cost_usd"):
-            console.print(f"Total Cost: [yellow]${job['total_cost_usd']:.6f}[/yellow]")
+            payment_lines.append(f"[bold]Total Cost:[/bold] [yellow]${job['total_cost_usd']:.6f}[/yellow] USDC")
+            if job.get("execution_duration_seconds"):
+                hourly_rate = (job['total_cost_usd'] / job['execution_duration_seconds']) * 3600
+                payment_lines.append(f"[bold]Effective Rate:[/bold] ${hourly_rate:.4f}/hr")
         if job.get("payment_tx_hash"):
-            console.print(f"Payment TX: [dim]{job['payment_tx_hash']}[/dim]")
-
+            payment_lines.append(f"[bold]Payment TX:[/bold] [dim]{job['payment_tx_hash'][:30]}...[/dim]")
+            payment_lines.append("[green]✓ Payment processed via x402[/green]")
+        elif status == "COMPLETED":
+            payment_lines.append("[yellow]⏳ Payment processing...[/yellow]")
+        
+        payment_panel = Panel("\n".join(payment_lines) if payment_lines else "[dim]No payment data[/dim]",
+                             title="x402 Payment", border_style="yellow")
+        
+        # Create layout
+        layout = Layout()
+        layout.split_column(
+            Layout(info_panel, name="info"),
+            Layout(name="bottom")
+        )
+        layout["bottom"].split_row(
+            Layout(timeline_panel, name="timeline"),
+            Layout(payment_panel, name="payment")
+        )
+        
+        console.print("\n")
+        console.print(layout)
+        
+        # Output section
         if job.get("result_output"):
-            console.print(f"\n[bold green]Output:[/bold green]")
-            console.print(job["result_output"])
+            output_text = job["result_output"]
+            # Truncate very long outputs
+            if len(output_text) > 2000:
+                output_text = output_text[:2000] + "\n...[truncated]"
+            console.print("\n")
+            console.print(Panel(output_text, title="Job Output", border_style="green"))
 
         if job.get("result_error"):
-            console.print(f"\n[bold red]Error:[/bold red]")
-            console.print(job["result_error"])
+            console.print("\n")
+            console.print(Panel(job["result_error"], title="Error Output", border_style="red"))
 
-    async def wait_for_job(self, job_id: str, poll_interval: int = 2):
-        """Wait for job to complete, showing progress"""
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            task = progress.add_task("Waiting for job...", total=None)
+    async def wait_for_job(self, job_id: str, poll_interval: int = 2, live_view: bool = True):
+        """Wait for job to complete, showing progress with rich visualizations"""
+        if not live_view:
+            # Simple mode - just spinner
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Waiting for job...", total=None)
+                while True:
+                    job = await self.get_job_status(job_id)
+                    if not job:
+                        console.print("[red]Failed to fetch job status[/red]")
+                        return
+                    status = job["status"]
+                    progress.update(task, description=f"Status: {status}")
+                    if status in ["COMPLETED", "FAILED", "CANCELLED"]:
+                        break
+                    await asyncio.sleep(poll_interval)
+            self.display_job_status(job)
+            return
 
-            while True:
-                job = await self.get_job_status(job_id)
-
-                if not job:
-                    console.print("[red]Failed to fetch job status[/red]")
-                    return
-
-                status = job["status"]
-                progress.update(task, description=f"Status: {status}")
-
-                if status in ["COMPLETED", "FAILED", "CANCELLED"]:
-                    break
-
-                await asyncio.sleep(poll_interval)
-
-        # Display final results
+        # Enhanced live view mode
+        status_colors = {
+            "PENDING": "yellow",
+            "CLAIMED": "blue",
+            "EXECUTING": "cyan",
+            "COMPLETED": "green",
+            "FAILED": "red",
+            "CANCELLED": "magenta"
+        }
+        
+        start_time = time.time()
+        previous_status = None
+        
+        def create_status_panel(job_data):
+            """Create a rich panel showing job status"""
+            if not job_data:
+                return Panel("[red]Failed to fetch job status[/red]", title="Job Status", border_style="red")
+            
+            status = job_data.get("status", "UNKNOWN")
+            status_color = status_colors.get(status, "white")
+            
+            lines = []
+            lines.append(f"[bold]Job ID:[/bold] [cyan]{job_data.get('job_id', 'N/A')[:20]}...[/cyan]")
+            lines.append(f"[bold]Status:[/bold] [{status_color}]{status}[/]")
+            
+            if job_data.get("seller_address"):
+                lines.append(f"[bold]Seller:[/bold] {job_data['seller_address'][:20]}...")
+            if job_data.get("node_id"):
+                lines.append(f"[bold]Node:[/bold] {job_data['node_id'][:20]}...")
+            
+            elapsed = time.time() - start_time
+            lines.append(f"[bold]Elapsed:[/bold] {elapsed:.1f}s")
+            
+            if job_data.get("execution_duration_seconds"):
+                lines.append(f"[bold]Duration:[/bold] {job_data['execution_duration_seconds']:.2f}s")
+            
+            if job_data.get("total_cost_usd"):
+                lines.append(f"[bold]Cost:[/bold] [yellow]${job_data['total_cost_usd']:.6f}[/yellow] USDC")
+            
+            if status == "EXECUTING":
+                lines.append("")
+                lines.append("[cyan]⚡ GPU compute in progress...[/cyan]")
+            elif status == "COMPLETED":
+                lines.append("")
+                lines.append("[green]✓ Job completed successfully![/green]")
+            elif status == "FAILED":
+                lines.append("")
+                lines.append("[red]✗ Job failed[/red]")
+            
+            content = "\n".join(lines)
+            return Panel(content, title="Job Status", border_style=status_color)
+        
+        def create_payment_panel(job_data):
+            """Create a panel showing payment information"""
+            lines = []
+            
+            if job_data.get("payment_tx_hash"):
+                lines.append(f"[bold]Transaction:[/bold] [dim]{job_data['payment_tx_hash'][:30]}...[/dim]")
+                lines.append("[green]✓ Payment processed via x402[/green]")
+            elif job_data.get("status") == "COMPLETED":
+                lines.append("[yellow]⏳ Payment processing...[/yellow]")
+            else:
+                lines.append("[dim]Payment will be processed after completion[/dim]")
+            
+            if job_data.get("total_cost_usd"):
+                lines.append(f"[bold]Amount:[/bold] [yellow]${job_data['total_cost_usd']:.6f}[/yellow] USDC")
+            
+            content = "\n".join(lines) if lines else "[dim]Waiting for payment info...[/dim]"
+            return Panel(content, title="x402 Payment", border_style="yellow")
+        
+        try:
+            with Live(console=console, refresh_per_second=2, screen=False) as live:
+                while True:
+                    job = await self.get_job_status(job_id)
+                    
+                    if not job:
+                        live.update(Panel("[red]Failed to fetch job status[/red]", title="Error", border_style="red"))
+                        await asyncio.sleep(1)
+                        continue
+                    
+                    status = job.get("status", "UNKNOWN")
+                    
+                    # Create layout
+                    layout = Layout()
+                    layout.split_column(
+                        Layout(name="status", size=10),
+                        Layout(name="payment", size=6)
+                    )
+                    
+                    layout["status"].update(create_status_panel(job))
+                    layout["payment"].update(create_payment_panel(job))
+                    
+                    live.update(layout)
+                    
+                    # Status change notification
+                    if previous_status and previous_status != status:
+                        status_icons = {
+                            "CLAIMED": "🎯",
+                            "EXECUTING": "⚡",
+                            "COMPLETED": "✓",
+                            "FAILED": "✗"
+                        }
+                        icon = status_icons.get(status, "")
+                        console.print(f"\n{icon} Status changed: [bold]{previous_status}[/bold] → [{status_colors.get(status, 'white')}]{status}[/]")
+                    
+                    previous_status = status
+                    
+                    if status in ["COMPLETED", "FAILED", "CANCELLED"]:
+                        await asyncio.sleep(1)  # Final update
+                        break
+                    
+                    await asyncio.sleep(poll_interval)
+        
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Monitoring cancelled by user[/yellow]")
+        
+        # Display final detailed results
+        job = await self.get_job_status(job_id)
+        console.print("\n" + "="*60)
         self.display_job_status(job)
 
     async def list_my_jobs(self, status_filter: Optional[str] = None, limit: int = 10):
@@ -529,7 +698,11 @@ class BuyerCLI:
 
                 elif command == "wait":
                     job_id = console.input("Job ID to wait for: ").strip()
-                    await self.wait_for_job(job_id)
+                    await self.wait_for_job(job_id, live_view=True)
+                
+                elif command == "monitor":
+                    job_id = console.input("Job ID to monitor: ").strip()
+                    await self.wait_for_job(job_id, live_view=True)
 
                 elif command == "templates":
                     self.display_templates()
@@ -571,7 +744,8 @@ class BuyerCLI:
                     console.print("  list      - List your jobs")
                     console.print("  download  - Download output files from a job")
                     console.print("  cancel    - Cancel a pending/claimed job")
-                    console.print("  wait      - Wait for job completion")
+                    console.print("  wait      - Wait for job completion (with live view)")
+                    console.print("  monitor   - Monitor job with live status updates (same as wait)")
                     console.print("  quit      - Exit CLI\n")
 
                 else:
