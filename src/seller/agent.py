@@ -106,7 +106,9 @@ class SellerAgent:
             docker_pids_limit=self.config.docker_pids_limit,
             docker_tmpfs_size=self.config.docker_tmpfs_size,
             model_cache_dir=model_cache_path if self.config.model_cache_enabled else None,
-            gpu_type=self.gpu_info.gpu_type.value
+            gpu_type=self.gpu_info.gpu_type.value,
+            docker_network_enabled=self.config.docker_network_enabled,
+            docker_setup_timeout=self.config.docker_setup_timeout
         )
         
         logger.info(
@@ -424,6 +426,11 @@ class SellerAgent:
             response.raise_for_status()
 
             data = response.json()
+            
+            # Log the response for debugging
+            if not data.get("claimed"):
+                logger.debug("no_jobs_available", response_data=data)
+                return
 
             if data.get("claimed"):
                 # Job claimed! Execute it
@@ -433,13 +440,17 @@ class SellerAgent:
                 timeout_seconds = data["timeout_seconds"]
                 max_price_per_hour = Decimal(str(data["max_price_per_hour"]))
                 buyer_address = data.get("buyer_address", "")
+                num_gpus = data.get("num_gpus", 1)
+                gpu_memory_limit_per_gpu = data.get("gpu_memory_limit_per_gpu")
 
                 logger.info(
                     "job_claimed_from_queue",
                     job_id=job_id,
                     timeout=timeout_seconds,
                     max_price=float(max_price_per_hour),
-                    buyer=buyer_address
+                    buyer=buyer_address,
+                    num_gpus=num_gpus,
+                    gpu_memory_limit_per_gpu=gpu_memory_limit_per_gpu
                 )
 
                 # Execute job in background
@@ -449,7 +460,9 @@ class SellerAgent:
                     requirements=requirements,
                     timeout_seconds=timeout_seconds,
                     max_price_per_hour=max_price_per_hour,
-                    buyer_address=buyer_address
+                    buyer_address=buyer_address,
+                    num_gpus=num_gpus,
+                    gpu_memory_limit_per_gpu=gpu_memory_limit_per_gpu
                 ))
 
         except Exception as e:
@@ -462,7 +475,9 @@ class SellerAgent:
         requirements: Optional[str],
         timeout_seconds: int,
         max_price_per_hour: Decimal,
-        buyer_address: str = ""
+        buyer_address: str = "",
+        num_gpus: int = 1,
+        gpu_memory_limit_per_gpu: Optional[str] = None
     ):
         """Execute a claimed job with payment processing"""
         self.is_busy = True
@@ -514,12 +529,19 @@ class SellerAgent:
 
             logger.info("job_execution_starting", job_id=job_id)
 
+            # Get resume_from_checkpoint from job data if available
+            resume_from_checkpoint = data.get("resume_from_checkpoint")
+            
             # Execute the job
             result = await self.executor.execute_job(
                 job_id=job_id,
                 script=script,
                 requirements=requirements,
-                timeout_seconds=timeout_seconds
+                timeout_seconds=timeout_seconds,
+                num_gpus=num_gpus,
+                gpu_memory_limit_per_gpu=gpu_memory_limit_per_gpu,
+                buyer_address=buyer_address,
+                resume_from_checkpoint=resume_from_checkpoint
             )
 
             # Calculate cost using per-second billing
@@ -538,6 +560,18 @@ class SellerAgent:
                 cost_usdc_wei=cost_usdc_wei
             )
 
+            # Save metrics to database if collected
+            if hasattr(result, 'metrics_collector') and result.metrics_collector:
+                try:
+                    from src.database import get_db_client
+                    db = get_db_client()
+                    metrics = result.metrics_collector.metrics
+                    if metrics:
+                        await db.save_job_metrics(job_id=job_id, metrics=metrics)
+                        logger.info("metrics_saved_to_database", job_id=job_id, metric_count=len(metrics))
+                except Exception as e:
+                    logger.warning("metrics_save_failed", job_id=job_id, error=str(e))
+            
             # Report results
             if result.success:
                 await self.complete_job(

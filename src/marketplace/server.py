@@ -5,8 +5,9 @@ Queue-based job marketplace with Supabase database
 
 import os
 import uuid
+import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
@@ -283,14 +284,27 @@ async def register_node(request: Request, registration: NodeRegistration):
     """
     db = get_db_client()
 
-    from src.models import ComputeNode
+    from src.models import ComputeNode, GPUInfo, GPUType as ModelsGPUType
     node_id = f"node_{uuid.uuid4().hex[:12]}"
 
+    # Convert GPUInfo from marketplace.models to src.models format
+    # Use model_dump(mode='python') to ensure enums are converted to their values
+    gpu_info_dict = registration.gpu_info.model_dump(mode='python')
+    # Convert vram_gb from float to Decimal if present
+    if 'vram_gb' in gpu_info_dict and gpu_info_dict['vram_gb'] is not None:
+        gpu_info_dict['vram_gb'] = Decimal(str(gpu_info_dict['vram_gb']))
+    
+    # Ensure gpu_type is converted to the correct enum type from src.models
+    if 'gpu_type' in gpu_info_dict:
+        gpu_info_dict['gpu_type'] = ModelsGPUType(gpu_info_dict['gpu_type'])
+    
+    gpu_info = GPUInfo(**gpu_info_dict)
+    
     node = ComputeNode(
         node_id=node_id,
         seller_address=registration.seller_address,
-        gpu_info=registration.gpu_info,
-        price_per_hour=registration.price_per_hour,
+        gpu_info=gpu_info,
+        price_per_hour=Decimal(str(registration.price_per_hour)),
         is_available=True
     )
 
@@ -531,7 +545,9 @@ async def submit_job(
         timeout_seconds=timeout_seconds,
         required_gpu_type=GPUType(required_gpu_type) if required_gpu_type else None,
         min_vram_gb=Decimal(str(min_vram_gb)) if min_vram_gb else None,
-        num_gpus=num_gpus
+        num_gpus=num_gpus,
+        gpu_memory_limit_per_gpu=gpu_memory_limit_per_gpu,
+        resume_from_checkpoint=resume_from_checkpoint
     )
 
     job_id = await db.submit_job(job)
@@ -580,38 +596,83 @@ async def claim_job(
             detail=f"Invalid GPU type: {gpu_type}"
         )
 
-    job = await db.claim_job(
-        node_id=node_id,
-        seller_address=seller_address,
-        gpu_type=gpu_type_enum,
-        price_per_hour=Decimal(str(price_per_hour)),
-        vram_gb=Decimal(str(vram_gb)),
-        num_gpus=num_gpus
-    )
+    try:
+        job = await db.claim_job(
+            node_id=node_id,
+            seller_address=seller_address,
+            gpu_type=gpu_type_enum,
+            price_per_hour=Decimal(str(price_per_hour)),
+            vram_gb=Decimal(str(vram_gb)),
+            num_gpus=num_gpus
+        )
 
-    if not job:
+        if not job:
+            # Log debug info to help diagnose why no jobs matched
+            logger.debug(
+                "no_jobs_matched",
+                node_id=node_id,
+                seller=seller_address,
+                gpu_type=gpu_type,
+                price_per_hour=price_per_hour,
+                vram_gb=vram_gb,
+                num_gpus=num_gpus
+            )
+            return {
+                "claimed": False,
+                "message": "No matching jobs available in queue"
+            }
+
+        logger.info(
+            "job_claimed",
+            job_id=job["job_id"],
+            node_id=node_id,
+            seller=seller_address
+        )
+
         return {
-            "claimed": False,
-            "message": "No matching jobs available in queue"
+            "claimed": True,
+            "job_id": job["job_id"],
+            "script": job["script"],
+            "requirements": job["requirements"],
+            "timeout_seconds": job["timeout_seconds"],
+            "max_price_per_hour": float(job["max_price_per_hour"]),
+            "buyer_address": job.get("buyer_address", ""),
+            "num_gpus": job.get("num_gpus", 1),
+            "gpu_memory_limit_per_gpu": job.get("gpu_memory_limit_per_gpu")
         }
+    except Exception as e:
+        logger.error(
+            "claim_job_error",
+            error=str(e),
+            node_id=node_id,
+            seller=seller_address
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to claim job: {str(e)}"
+        )
 
-    logger.info(
-        "job_claimed",
-        job_id=job["job_id"],
-        node_id=node_id,
-        seller=seller_address
-    )
 
-    return {
-        "claimed": True,
-        "job_id": job["job_id"],
-        "script": job["script"],
-        "requirements": job["requirements"],
-        "timeout_seconds": job["timeout_seconds"],
-        "max_price_per_hour": float(job["max_price_per_hour"]),
-        "buyer_address": job.get("buyer_address", ""),
-        "num_gpus": job.get("num_gpus", 1)
-    }
+@app.post("/api/v1/maintenance/release-stale-claims", tags=["Maintenance"])
+async def release_stale_claims_endpoint(request: Request, stale_minutes: int = 1):
+    """
+    Manually release stale CLAIMED jobs back to PENDING
+    Useful for debugging when jobs get stuck in CLAIMED state
+    """
+    db = get_db_client()
+    try:
+        released = await db.release_stale_claims(stale_minutes=stale_minutes)
+        logger.info("manual_stale_claims_release", count=released, stale_minutes=stale_minutes)
+        return {
+            "released": released,
+            "message": f"Released {released} stale claims (claimed but not started in {stale_minutes} minute(s))"
+        }
+    except Exception as e:
+        logger.error("release_stale_claims_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to release stale claims: {str(e)}"
+        )
 
 
 @app.post("/api/v1/jobs/{job_id}/start")
@@ -1029,6 +1090,319 @@ async def get_marketplace_stats(request: Request):
             "total": sum(job_stats.values())
         },
         "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+# ============================================================================
+# Metrics & Experiment Tracking Endpoints
+# ============================================================================
+
+@app.get("/api/v1/jobs/{job_id}/metrics", tags=["Metrics"])
+@limiter.limit("100/minute")
+async def get_job_metrics(request: Request, job_id: str, metric_name: Optional[str] = None):
+    """Get metrics for a job"""
+    db = get_db_client()
+    
+    # Verify job exists
+    job = await db.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+    
+    # Get metrics from database
+    metrics = await db.get_job_metrics(job_id, metric_name)
+    
+    # Organize metrics by name for time series
+    metrics_by_name = {}
+    for metric in metrics:
+        name = metric["metric_name"]
+        if name not in metrics_by_name:
+            metrics_by_name[name] = []
+        metrics_by_name[name].append({
+            "value": float(metric["value"]),
+            "step": metric.get("step"),
+            "epoch": metric.get("epoch"),
+            "timestamp": metric.get("timestamp")
+        })
+    
+    # Calculate summary
+    summary = {
+        "total_metrics": len(metrics),
+        "metric_names": list(set(m["metric_name"] for m in metrics)),
+        "latest_values": {}
+    }
+    
+    for name, values in metrics_by_name.items():
+        if values:
+            latest = max(values, key=lambda x: x.get("step", 0) or x.get("timestamp", ""))
+            summary["latest_values"][name] = latest
+    
+    return {
+        "job_id": job_id,
+        "summary": summary,
+        "time_series": metrics_by_name,
+        "metrics": metrics
+    }
+
+
+@app.get("/api/v1/jobs/{job_id}/checkpoints", tags=["Checkpoints"])
+@limiter.limit("100/minute")
+async def list_job_checkpoints(request: Request, job_id: str):
+    """List checkpoints for a job"""
+    db = get_db_client()
+    
+    # Verify job exists
+    job = await db.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+    
+    checkpoints = await db.list_checkpoints(job_id)
+    
+    return {
+        "job_id": job_id,
+        "checkpoints": checkpoints,
+        "count": len(checkpoints)
+    }
+
+
+@app.get("/api/v1/experiments", tags=["Experiments"])
+@limiter.limit("100/minute")
+async def list_experiments(
+    request: Request,
+    buyer_address: Optional[str] = None,
+    status: Optional[str] = "active",
+    limit: int = 50
+):
+    """List experiments"""
+    db = get_db_client()
+    
+    experiments = await db.list_experiments(
+        buyer_address=buyer_address,
+        status=status,
+        limit=limit
+    )
+    
+    return {
+        "experiments": experiments,
+        "count": len(experiments)
+    }
+
+
+@app.post("/api/v1/experiments", status_code=status.HTTP_201_CREATED, tags=["Experiments"])
+@limiter.limit("10/minute")
+async def create_experiment(
+    request: Request,
+    buyer_address: str,
+    name: str,
+    description: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    hyperparameters: Optional[Dict[str, Any]] = None
+):
+    """Create a new experiment"""
+    db = get_db_client()
+    
+    try:
+        experiment_id = await db.create_experiment(
+            buyer_address=buyer_address,
+            name=name,
+            description=description,
+            tags=tags,
+            hyperparameters=hyperparameters
+        )
+        
+        logger.info("experiment_created", experiment_id=experiment_id, name=name, buyer=buyer_address)
+        
+        return {
+            "experiment_id": experiment_id,
+            "name": name,
+            "buyer_address": buyer_address,
+            "status": "active"
+        }
+    except Exception as e:
+        logger.error("experiment_creation_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create experiment: {str(e)}"
+        )
+
+
+@app.get("/api/v1/experiments/{experiment_id}/compare", tags=["Experiments"])
+@limiter.limit("100/minute")
+async def compare_experiments(request: Request, experiment_id: str):
+    """Compare experiments - get all jobs and metrics for an experiment"""
+    db = get_db_client()
+    
+    # Get experiment
+    experiment = await db.get_experiment(experiment_id)
+    if not experiment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Experiment {experiment_id} not found"
+        )
+    
+    # Get all jobs for this experiment
+    jobs = await db.get_jobs_by_buyer(experiment["buyer_address"], limit=1000)
+    experiment_jobs = [j for j in jobs if j.get("experiment_id") == experiment_id]
+    
+    # Get metrics for all jobs
+    comparison_data = []
+    for job in experiment_jobs:
+        job_metrics = await db.get_job_metrics(job["job_id"])
+        comparison_data.append({
+            "job_id": job["job_id"],
+            "status": job.get("status"),
+            "metrics": job_metrics,
+            "total_cost": float(job.get("total_cost_usd", 0)),
+            "execution_time": job.get("execution_duration_seconds")
+        })
+    
+    return {
+        "experiment_id": experiment_id,
+        "experiment_name": experiment["name"],
+        "jobs": comparison_data,
+        "job_count": len(comparison_data)
+    }
+
+
+@app.get("/api/v1/models", tags=["Models"])
+@limiter.limit("100/minute")
+async def list_models(
+    request: Request,
+    buyer_address: Optional[str] = None,
+    experiment_id: Optional[str] = None,
+    limit: int = 50
+):
+    """List trained models"""
+    db = get_db_client()
+    
+    models = await db.list_models(
+        buyer_address=buyer_address,
+        experiment_id=experiment_id,
+        limit=limit
+    )
+    
+    return {
+        "models": models,
+        "count": len(models)
+    }
+
+
+@app.get("/api/v1/models/{model_id}/download", tags=["Models"])
+@limiter.limit("10/minute")
+async def download_model(request: Request, model_id: str):
+    """Get download URL for a model"""
+    from src.storage import get_storage_client
+    
+    db = get_db_client()
+    storage = get_storage_client()
+    
+    # Get model metadata
+    model = await db.get_model(model_id)
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model {model_id} not found"
+        )
+    
+    # Generate signed download URL
+    storage_path = model["storage_path"]
+    download_url = storage.get_signed_download_url(storage_path, expires_in_seconds=3600)
+    
+    return {
+        "model_id": model_id,
+        "model_name": model["name"],
+        "version": model["version"],
+        "download_url": download_url,
+        "expires_in": 3600,
+        "file_size_bytes": model["file_size_bytes"]
+    }
+
+
+@app.get("/api/v1/datasets", tags=["Datasets"])
+@limiter.limit("100/minute")
+async def list_datasets(
+    request: Request,
+    buyer_address: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    is_public: Optional[bool] = None,
+    limit: int = 50
+):
+    """List datasets"""
+    from src.storage.dataset_manager import get_dataset_manager
+    
+    dataset_manager = get_dataset_manager()
+    datasets = await dataset_manager.list_datasets(
+        buyer_address=buyer_address,
+        tags=tags,
+        is_public=is_public,
+        limit=limit
+    )
+    
+    return {
+        "datasets": datasets,
+        "count": len(datasets)
+    }
+
+
+@app.post("/api/v1/datasets", status_code=status.HTTP_201_CREATED, tags=["Datasets"])
+@limiter.limit("10/minute")
+async def create_dataset(
+    request: Request,
+    buyer_address: str,
+    name: str,
+    description: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    is_public: bool = False
+):
+    """Create a new dataset"""
+    from src.storage.dataset_manager import get_dataset_manager
+    
+    dataset_manager = get_dataset_manager()
+    dataset = await dataset_manager.create_dataset(
+        buyer_address=buyer_address,
+        name=name,
+        description=description,
+        tags=tags,
+        is_public=is_public
+    )
+    
+    return dataset
+
+
+@app.post("/api/v1/files/upload/chunked", tags=["Files"])
+@limiter.limit("5/minute")
+async def start_chunked_upload(
+    request: Request,
+    file_name: str,
+    file_size: int,
+    content_type: Optional[str] = None
+):
+    """Start a chunked file upload"""
+    from src.storage import get_storage_client
+    
+    storage = get_storage_client()
+    job_id = str(uuid.uuid4())  # Would come from request context
+    
+    storage_path = storage.generate_storage_path(
+        job_id=job_id,
+        file_name=file_name,
+        file_type="input"
+    )
+    
+    # Generate upload URL
+    upload_url = storage.get_signed_upload_url(storage_path)
+    
+    return {
+        "upload_id": str(uuid.uuid4()),
+        "storage_path": storage_path,
+        "upload_url": upload_url,
+        "chunk_size": 10 * 1024 * 1024,  # 10MB
+        "expires_in": 3600
     }
 
 
