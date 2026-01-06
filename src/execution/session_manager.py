@@ -108,7 +108,9 @@ class SessionManager:
         timeout_minutes: int = 60,
         gpu_enabled: bool = True,
         memory_limit: str = "8g",
-        workspace_path: Optional[str] = None
+        workspace_path: Optional[str] = None,
+        num_gpus: int = 1,
+        gpu_memory_limit_per_gpu: Optional[str] = None
     ) -> SessionInfo:
         """
         Start a Jupyter notebook session
@@ -121,6 +123,8 @@ class SessionManager:
             gpu_enabled: Whether to enable GPU access
             memory_limit: Container memory limit
             workspace_path: Optional path to mount as workspace
+            num_gpus: Number of GPUs to allocate (default: 1)
+            gpu_memory_limit_per_gpu: Per-GPU memory limit (e.g., "8g")
             
         Returns:
             SessionInfo with connection details
@@ -157,22 +161,61 @@ class SessionManager:
             await nvidia_check.communicate()
             
             if nvidia_check.returncode == 0:
-                cmd.extend(["--gpus", "all"])
-                logger.info("gpu_enabled_for_session", job_id=job_id, gpu_type="CUDA")
+                # Multi-GPU support with optional per-GPU memory limits
+                if num_gpus >= 8 or num_gpus == 0:
+                    # Use all GPUs
+                    if gpu_memory_limit_per_gpu:
+                        # Per-GPU memory limit not supported with "all", use device specification
+                        gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
+                        cmd.extend(["--gpus", f'"{gpu_spec}"'])
+                    else:
+                        cmd.extend(["--gpus", "all"])
+                else:
+                    # Specify specific GPUs
+                    if gpu_memory_limit_per_gpu:
+                        # Per-GPU memory limits
+                        gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
+                        cmd.extend(["--gpus", f'"{gpu_spec}"'])
+                    else:
+                        # Just device numbers
+                        gpu_spec = ",".join([str(i) for i in range(num_gpus)])
+                        cmd.extend(["--gpus", f'"device={gpu_spec}"'])
+                
+                logger.info("gpu_enabled_for_session", job_id=job_id, gpu_type="CUDA", num_gpus=num_gpus, 
+                           gpu_memory_limit=gpu_memory_limit_per_gpu)
             else:
                 # For Apple Silicon (MPS), GPU access works natively in containers
                 # MPS doesn't need Docker GPU flags - PyTorch will detect it automatically
-                logger.info("gpu_enabled_for_session", job_id=job_id, gpu_type="MPS", note="MPS works natively in containers")
+                # MPS doesn't support multi-GPU (unified architecture)
+                if num_gpus > 1:
+                    logger.warning("mps_multi_gpu_not_supported", job_id=job_id, num_gpus=num_gpus, 
+                                  note="MPS doesn't support multi-GPU, using single GPU")
+                logger.info("gpu_enabled_for_session", job_id=job_id, gpu_type="MPS", num_gpus=1, 
+                           note="MPS works natively in containers")
         
         # Add workspace mount
         if workspace_path:
             cmd.extend(["-v", f"{workspace_path}:/home/jovyan/work"])
         
         # Add environment variables
-        cmd.extend([
+        env_vars = [
             "-e", f"JUPYTER_TOKEN={token}",
             "-e", "JUPYTER_ENABLE_LAB=yes",
-        ])
+        ]
+        
+        # Add distributed training environment variables for multi-GPU
+        if gpu_enabled and num_gpus > 1:
+            # Set CUDA visible devices
+            cuda_visible = ",".join([str(i) for i in range(num_gpus)])
+            env_vars.extend(["-e", f"CUDA_VISIBLE_DEVICES={cuda_visible}"])
+            # Set distributed training variables
+            env_vars.extend(["-e", "WORLD_SIZE={}".format(num_gpus)])
+            env_vars.extend(["-e", "MASTER_ADDR=localhost"])
+            env_vars.extend(["-e", "MASTER_PORT=29500"])
+            # LOCAL_RANK will be set per process if using torchrun
+            logger.info("distributed_env_vars_set", job_id=job_id, num_gpus=num_gpus)
+        
+        cmd.extend(env_vars)
         
         # Add image and start command
         cmd.extend([
