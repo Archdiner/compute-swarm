@@ -111,8 +111,14 @@ class DatabaseClient:
             "required_gpu_type": job.required_gpu_type.value.upper() if job.required_gpu_type else None,
             "min_vram_gb": float(job.min_vram_gb) if job.min_vram_gb else None,
             "num_gpus": job.num_gpus,
+            "gpu_memory_limit_per_gpu": job.gpu_memory_limit_per_gpu,
+            "distributed_backend": job.distributed_backend.value if job.distributed_backend else None,
             "status": "PENDING"
         }
+        
+        # Add experiment_id if job has it (would need to add to ComputeJob model)
+        if hasattr(job, 'experiment_id') and job.experiment_id:
+            job_data["experiment_id"] = job.experiment_id
 
         result = self.client.table("jobs").insert(job_data).execute()
         return result.data[0]["job_id"]
@@ -130,23 +136,87 @@ class DatabaseClient:
         Atomically claim the next available job that matches seller's capabilities
         Uses Supabase RPC to call the claim_job PostgreSQL function
         """
-        result = self.client.rpc(
-            "claim_job",
-            {
-                "p_node_id": node_id,
-                "p_seller_address": seller_address,
-                "p_gpu_type": gpu_type.value.upper(),  # Convert to uppercase for database enum
-                "p_price_per_hour": float(price_per_hour),
-                "p_vram_gb": float(vram_gb),
-                "p_num_gpus": num_gpus
-            }
-        ).execute()
+        try:
+            result = self.client.rpc(
+                "claim_job",
+                {
+                    "p_node_id": node_id,
+                    "p_seller_address": seller_address,
+                    "p_gpu_type": gpu_type.value.upper(),  # Convert to uppercase for database enum
+                    "p_price_per_hour": float(price_per_hour),
+                    "p_vram_gb": float(vram_gb),
+                    "p_num_gpus": num_gpus
+                }
+            ).execute()
+        except Exception as e:
+            import structlog
+            logger = structlog.get_logger()
+            logger.error(
+                "claim_job_rpc_failed",
+                error=str(e),
+                node_id=node_id,
+                gpu_type=gpu_type.value,
+                price_per_hour=float(price_per_hour)
+            )
+            raise
+
+        # Log what we got back from the SQL function
+        import structlog
+        logger = structlog.get_logger()
+        if result.data:
+            logger.debug(
+                "claim_job_rpc_success",
+                node_id=node_id,
+                result_count=len(result.data),
+                job_id=result.data[0].get("job_id") if result.data else None
+            )
+        else:
+            logger.debug(
+                "claim_job_rpc_no_data",
+                node_id=node_id,
+                gpu_type=gpu_type.value,
+                price_per_hour=float(price_per_hour),
+                vram_gb=float(vram_gb),
+                num_gpus=num_gpus
+            )
 
         if result.data:
             job_data = result.data[0]
-            # Fetch full job details including job_type and docker_image
-            full_job = await self.get_job(job_data["job_id"])
-            return full_job
+            # The SQL function already returns all necessary fields
+            # Convert job_id to string (it comes as TEXT from SQL function but DB stores as UUID)
+            job_id = str(job_data["job_id"])
+            
+            # Try to get full job details, but if it fails, use the data from the SQL function
+            # This handles the case where job_id format doesn't match exactly
+            full_job = await self.get_job(job_id)
+            if full_job:
+                return full_job
+            
+            # If get_job fails, use the data from SQL function directly
+            # The SQL function returns: job_id, script, requirements, timeout_seconds, 
+            # max_price_per_hour, buyer_address, job_type, docker_image
+            import structlog
+            logger = structlog.get_logger()
+            logger.warning(
+                "claim_job_get_job_failed_using_rpc_data",
+                job_id=job_id,
+                rpc_result=job_data
+            )
+            
+            # Build job dict from SQL function result
+            # job_id from SQL function is TEXT, but we need to ensure it's a valid UUID string
+            return {
+                "job_id": job_id,
+                "script": job_data.get("script", ""),
+                "requirements": job_data.get("requirements"),
+                "timeout_seconds": job_data.get("timeout_seconds", 3600),
+                "max_price_per_hour": Decimal(str(job_data.get("max_price_per_hour", 0))),
+                "buyer_address": job_data.get("buyer_address", ""),
+                "job_type": job_data.get("job_type", "batch_job"),
+                "docker_image": job_data.get("docker_image"),
+                "num_gpus": job_data.get("num_gpus", 1),
+                "gpu_memory_limit_per_gpu": job_data.get("gpu_memory_limit_per_gpu")
+            }
         return None
 
     async def start_job_execution(self, job_id: str) -> None:
@@ -362,6 +432,357 @@ class DatabaseClient:
         
         # Update seller's reputation score (trigger should handle this, but we can do it here too)
         return result.data[0]["id"] if result.data else None
+
+    # ===== EXPERIMENT TRACKING OPERATIONS =====
+
+    async def save_job_metrics(
+        self,
+        job_id: str,
+        metrics: List[Dict[str, Any]],
+        experiment_id: Optional[str] = None
+    ) -> int:
+        """
+        Save job metrics to database
+        
+        Args:
+            job_id: Job ID
+            metrics: List of metric dicts with metric_name, value, step, epoch, timestamp
+            experiment_id: Optional experiment ID to link metrics
+            
+        Returns:
+            Number of metrics saved
+        """
+        import structlog
+        logger = structlog.get_logger()
+        
+        if not metrics:
+            return 0
+        
+        metrics_data = []
+        for metric in metrics:
+            metric_data = {
+                "job_id": job_id,
+                "metric_name": metric.get("metric_name"),
+                "value": float(metric.get("value", 0)),
+                "step": metric.get("step"),
+                "epoch": metric.get("epoch"),
+            }
+            
+            if experiment_id:
+                metric_data["experiment_id"] = experiment_id
+            
+            if metric.get("timestamp"):
+                metric_data["timestamp"] = metric["timestamp"]
+            
+            metrics_data.append(metric_data)
+        
+        try:
+            result = self.client.table("job_metrics").insert(metrics_data).execute()
+            saved_count = len(result.data) if result.data else len(metrics_data)
+            logger.info("job_metrics_saved", job_id=job_id, count=saved_count, experiment_id=experiment_id)
+            return saved_count
+        except Exception as e:
+            logger.error("job_metrics_save_failed", job_id=job_id, error=str(e))
+            raise
+
+    async def get_job_metrics(
+        self,
+        job_id: str,
+        metric_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get metrics for a job
+        
+        Args:
+            job_id: Job ID
+            metric_name: Optional metric name to filter
+            
+        Returns:
+            List of metric dicts
+        """
+        query = self.client.table("job_metrics").select("*").eq("job_id", job_id)
+        
+        if metric_name:
+            query = query.eq("metric_name", metric_name)
+        
+        query = query.order("timestamp", desc=False)
+        
+        result = query.execute()
+        return result.data if result.data else []
+
+    async def create_experiment(
+        self,
+        buyer_address: str,
+        name: str,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        hyperparameters: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Create a new experiment
+        
+        Args:
+            buyer_address: Buyer address
+            name: Experiment name
+            description: Optional description
+            tags: Optional tags
+            hyperparameters: Optional hyperparameters dict
+            
+        Returns:
+            Experiment ID
+        """
+        import structlog
+        logger = structlog.get_logger()
+        
+        experiment_data = {
+            "buyer_address": buyer_address,
+            "name": name,
+            "description": description,
+            "tags": tags or [],
+            "hyperparameters": hyperparameters,
+            "status": "active"
+        }
+        
+        result = self.client.table("experiments").insert(experiment_data).execute()
+        
+        if result.data:
+            experiment_id = result.data[0]["id"]
+            logger.info("experiment_created", experiment_id=experiment_id, name=name, buyer=buyer_address)
+            return experiment_id
+        else:
+            raise Exception("Failed to create experiment")
+
+    async def get_experiment(self, experiment_id: str) -> Optional[Dict[str, Any]]:
+        """Get experiment by ID"""
+        result = self.client.table("experiments").select("*").eq("id", experiment_id).execute()
+        return result.data[0] if result.data else None
+
+    async def list_experiments(
+        self,
+        buyer_address: Optional[str] = None,
+        status: Optional[str] = "active",
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        List experiments
+        
+        Args:
+            buyer_address: Filter by buyer
+            status: Filter by status (default: active)
+            limit: Maximum results
+            
+        Returns:
+            List of experiment dicts
+        """
+        query = self.client.table("experiments").select("*")
+        
+        if buyer_address:
+            query = query.eq("buyer_address", buyer_address)
+        
+        if status:
+            query = query.eq("status", status)
+        
+        query = query.order("created_at", desc=True).limit(limit)
+        
+        result = query.execute()
+        return result.data if result.data else []
+
+    async def save_checkpoint(
+        self,
+        job_id: str,
+        storage_path: str,
+        file_size_bytes: int,
+        checkpoint_name: Optional[str] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        loss: Optional[float] = None,
+        metric_values: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        experiment_id: Optional[str] = None,
+        checksum: Optional[str] = None
+    ) -> str:
+        """
+        Save checkpoint metadata
+        
+        Args:
+            job_id: Job ID
+            storage_path: Path in storage
+            file_size_bytes: File size
+            checkpoint_name: Optional checkpoint name
+            epoch: Optional epoch number
+            step: Optional step number
+            loss: Optional loss value
+            metric_values: Optional dict of metrics at this checkpoint
+            description: Optional description
+            experiment_id: Optional experiment ID
+            checksum: Optional file checksum
+            
+        Returns:
+            Checkpoint ID
+        """
+        import structlog
+        logger = structlog.get_logger()
+        
+        checkpoint_data = {
+            "job_id": job_id,
+            "storage_path": storage_path,
+            "file_size_bytes": file_size_bytes,
+            "checkpoint_name": checkpoint_name,
+            "epoch": epoch,
+            "step": step,
+            "loss": float(loss) if loss is not None else None,
+            "metric_values": metric_values,
+            "description": description,
+            "checksum": checksum
+        }
+        
+        if experiment_id:
+            checkpoint_data["experiment_id"] = experiment_id
+        
+        result = self.client.table("checkpoints").insert(checkpoint_data).execute()
+        
+        if result.data:
+            checkpoint_id = result.data[0]["id"]
+            logger.info("checkpoint_saved", checkpoint_id=checkpoint_id, job_id=job_id, epoch=epoch, step=step)
+            return checkpoint_id
+        else:
+            raise Exception("Failed to save checkpoint")
+
+    async def list_checkpoints(
+        self,
+        job_id: str,
+        experiment_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        List checkpoints for a job or experiment
+        
+        Args:
+            job_id: Job ID (optional if experiment_id provided)
+            experiment_id: Optional experiment ID
+            
+        Returns:
+            List of checkpoint dicts
+        """
+        query = self.client.table("checkpoints").select("*")
+        
+        if job_id:
+            query = query.eq("job_id", job_id)
+        
+        if experiment_id:
+            query = query.eq("experiment_id", experiment_id)
+        
+        query = query.order("created_at", desc=True)
+        
+        result = query.execute()
+        return result.data if result.data else []
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
+        """Get checkpoint by ID"""
+        result = self.client.table("checkpoints").select("*").eq("id", checkpoint_id).execute()
+        return result.data[0] if result.data else None
+
+    async def save_model(
+        self,
+        job_id: str,
+        buyer_address: str,
+        name: str,
+        version: str,
+        storage_path: str,
+        file_size_bytes: int,
+        checksum: Optional[str] = None,
+        format: Optional[str] = None,
+        architecture: Optional[str] = None,
+        framework: Optional[str] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        experiment_id: Optional[str] = None
+    ) -> str:
+        """
+        Save model metadata
+        
+        Args:
+            job_id: Training job ID
+            buyer_address: Buyer address
+            name: Model name
+            version: Model version (semantic versioning)
+            storage_path: Path in storage
+            file_size_bytes: File size
+            checksum: Optional checksum
+            format: Model format (pt, pth, safetensors, onnx, h5)
+            architecture: Model architecture
+            framework: Framework (pytorch, tensorflow, etc.)
+            metrics: Optional metrics dict
+            description: Optional description
+            experiment_id: Optional experiment ID
+            
+        Returns:
+            Model ID
+        """
+        import structlog
+        logger = structlog.get_logger()
+        
+        model_data = {
+            "job_id": job_id,
+            "buyer_address": buyer_address,
+            "name": name,
+            "version": version,
+            "storage_path": storage_path,
+            "file_size_bytes": file_size_bytes,
+            "checksum": checksum,
+            "format": format,
+            "architecture": architecture,
+            "framework": framework,
+            "metrics": metrics,
+            "description": description,
+            "status": "active"
+        }
+        
+        if experiment_id:
+            model_data["experiment_id"] = experiment_id
+        
+        result = self.client.table("models").insert(model_data).execute()
+        
+        if result.data:
+            model_id = result.data[0]["id"]
+            logger.info("model_saved", model_id=model_id, name=name, version=version, buyer=buyer_address)
+            return model_id
+        else:
+            raise Exception("Failed to save model")
+
+    async def list_models(
+        self,
+        buyer_address: Optional[str] = None,
+        experiment_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        List models
+        
+        Args:
+            buyer_address: Filter by buyer
+            experiment_id: Filter by experiment
+            limit: Maximum results
+            
+        Returns:
+            List of model dicts
+        """
+        query = self.client.table("models").select("*").eq("status", "active")
+        
+        if buyer_address:
+            query = query.eq("buyer_address", buyer_address)
+        
+        if experiment_id:
+            query = query.eq("experiment_id", experiment_id)
+        
+        query = query.order("created_at", desc=True).limit(limit)
+        
+        result = query.execute()
+        return result.data if result.data else []
+
+    async def get_model(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Get model by ID"""
+        result = self.client.table("models").select("*").eq("id", model_id).execute()
+        return result.data[0] if result.data else None
 
 
 # Singleton instance

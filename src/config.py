@@ -159,6 +159,27 @@ class SellerConfig(BaseSettings):
         default=True,
         description="Enable persistent model caching across jobs"
     )
+    
+    # Network Access Configuration (for controlled network access during setup)
+    docker_network_enabled: bool = Field(
+        default=True,
+        description="Enable controlled network access during setup phase (installs packages, downloads models)"
+    )
+    docker_setup_timeout: int = Field(
+        default=300,
+        description="Maximum time for network-enabled setup phase in seconds (5 minutes default)"
+    )
+    docker_network_whitelist: list[str] = Field(
+        default=[
+            "pypi.org",
+            "files.pythonhosted.org",
+            "huggingface.co",
+            "github.com",
+            "raw.githubusercontent.com",
+            "cdn-lfs.huggingface.co"
+        ],
+        description="Whitelisted domains for network access during setup (DNS-based filtering not implemented, but documented)"
+    )
 
     # Network Configuration
     network: Literal["base-sepolia", "base-mainnet"] = Field(default="base-sepolia")

@@ -19,6 +19,13 @@ class GPUType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class DistributedBackend(str, Enum):
+    """Supported distributed training backends"""
+    DDP = "ddp"
+    HOROVOD = "horovod"
+    NONE = "none"
+
+
 class JobStatus(str, Enum):
     """Job lifecycle states"""
     PENDING = "PENDING"
@@ -101,6 +108,9 @@ class ComputeJob(BaseModel):
     required_gpu_type: Optional[GPUType] = None
     min_vram_gb: Optional[Decimal] = None
     num_gpus: int = Field(default=1, ge=1, le=8, description="Number of GPUs required (1-8)")
+    gpu_memory_limit_per_gpu: Optional[str] = Field(default=None, description="Per-GPU memory limit (e.g., '8g')")
+    distributed_backend: Optional[DistributedBackend] = Field(default=None, description="Distributed training backend (auto-detected if not specified)")
+    resume_from_checkpoint: Optional[str] = Field(default=None, description="Checkpoint ID to resume from")
     
     # Assignment fields (filled when claimed)
     node_id: Optional[str] = None
@@ -262,6 +272,8 @@ class SessionStartRequest(BaseModel):
     required_gpu_type: Optional[GPUType] = None
     min_vram_gb: Optional[float] = None
     docker_image: Optional[str] = None
+    num_gpus: int = Field(default=1, ge=1, le=8, description="Number of GPUs required (1-8)")
+    gpu_memory_limit_per_gpu: Optional[str] = Field(default=None, description="Per-GPU memory limit (e.g., '8g')")
 
 
 class SessionResponse(BaseModel):
