@@ -23,8 +23,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-6">
           <button
-            onClick={onGetStarted}
-            className="w-full sm:w-auto bg-amber-400 hover:bg-amber-300 text-zinc-950 px-8 py-3 rounded-md font-semibold text-base transition-all flex items-center justify-center gap-2 group shadow-[0_0_30px_rgba(251,191,36,0.1)]"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onGetStarted();
+            }}
+            className="w-full sm:w-auto bg-amber-400 hover:bg-amber-300 text-zinc-950 px-8 py-3 rounded-md font-semibold text-base transition-all flex items-center justify-center gap-2 group shadow-[0_0_30px_rgba(251,191,36,0.1)] cursor-pointer"
           >
             Launch Swarm <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </button>

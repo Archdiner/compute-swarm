@@ -3,7 +3,6 @@ import { useWallet } from '../hooks/useWallet';
 import { useSellerJobs } from '../hooks/useJobs';
 import { apiClient } from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
-import { Label } from '../components/Label';
 import { Terminal, Cpu, TrendingUp, Clock, DollarSign } from 'lucide-react';
 
 export const SellerView: React.FC = () => {

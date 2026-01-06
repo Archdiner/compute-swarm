@@ -81,28 +81,38 @@ export function useWallet() {
 
     // Listen for account changes
     if (window.ethereum) {
-      window.ethereum.on('accountsChanged', (accounts: string[]) => {
+      const handleAccountsChanged = (accounts: string[]) => {
         if (accounts.length > 0) {
-          setState(prev => ({ ...prev, address: accounts[0], isConnected: true }));
+          setState(prev => ({ ...prev, address: accounts[0], isConnected: true, error: null }));
         } else {
           setState(prev => ({ ...prev, address: null, isConnected: false }));
         }
-      });
+      };
 
-      window.ethereum.on('chainChanged', () => {
+      const handleChainChanged = () => {
+        // Reload page when chain changes
         window.location.reload();
-      });
+      };
+
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      window.ethereum.on('chainChanged', handleChainChanged);
 
       return () => {
-        window.ethereum?.removeListener('accountsChanged', checkConnection);
-        window.ethereum?.removeListener('chainChanged', () => {});
+        if (window.ethereum) {
+          window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+          window.ethereum.removeListener('chainChanged', handleChainChanged);
+        }
       };
     }
   }, [checkConnection]);
 
   const connect = useCallback(async () => {
     if (typeof window.ethereum === 'undefined') {
-      setState(prev => ({ ...prev, error: 'MetaMask is not installed. Please install MetaMask to continue.' }));
+      setState(prev => ({ 
+        ...prev, 
+        error: 'MetaMask is not installed. Please install MetaMask to continue.',
+        isLoading: false 
+      }));
       return;
     }
 
@@ -111,14 +121,22 @@ export function useWallet() {
 
       const provider = new ethers.BrowserProvider(window.ethereum);
       
-      // Request account access
-      await provider.send('eth_requestAccounts', []);
+      // Request account access - this opens MetaMask popup
+      const accounts = await window.ethereum.request({
+        method: 'eth_requestAccounts',
+      });
+
+      if (!accounts || accounts.length === 0) {
+        throw new Error('No accounts found. Please unlock MetaMask.');
+      }
+
+      const address = accounts[0];
       
       // Check if we need to switch networks
       const network = await provider.getNetwork();
-      const targetChainId = parseInt(getNetworkConfig().chainId, 16);
+      const targetChainId = BigInt(parseInt(getNetworkConfig().chainId, 16));
       
-      if (Number(network.chainId) !== targetChainId) {
+      if (network.chainId !== targetChainId) {
         try {
           await window.ethereum.request({
             method: 'wallet_switchEthereumChain',
@@ -127,31 +145,55 @@ export function useWallet() {
         } catch (switchError: any) {
           // If the chain doesn't exist, add it
           if (switchError.code === 4902) {
+            const networkConfig = getNetworkConfig();
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
-              params: [getNetworkConfig()],
+              params: [{
+                chainId: networkConfig.chainId,
+                chainName: networkConfig.chainName,
+                nativeCurrency: networkConfig.nativeCurrency,
+                rpcUrls: networkConfig.rpcUrls,
+                blockExplorerUrls: networkConfig.blockExplorerUrls,
+              }],
             });
           } else {
+            // User rejected or other error
             throw switchError;
           }
         }
       }
 
+      // Verify connection by getting signer address
       const signer = await provider.getSigner();
-      const address = await signer.getAddress();
+      const verifiedAddress = await signer.getAddress();
+      
+      if (!verifiedAddress || verifiedAddress.toLowerCase() !== address.toLowerCase()) {
+        throw new Error('Address verification failed');
+      }
 
+      // Update state with connected address
+      console.log('Wallet connected:', verifiedAddress);
       setState({
-        address,
+        address: verifiedAddress,
         isConnected: true,
         isLoading: false,
         error: null,
       });
     } catch (error: any) {
+      console.error('Wallet connection error:', error);
+      const errorMessage = error.code === 4001 
+        ? 'Connection rejected. Please approve the connection request in MetaMask.'
+        : error.code === -32002
+        ? 'Connection request already pending. Please check MetaMask.'
+        : error.message || 'Failed to connect wallet';
+      
       setState(prev => ({
         ...prev,
         isLoading: false,
-        error: error.message || 'Failed to connect wallet',
+        error: errorMessage,
       }));
+      // Re-throw to let caller know it failed
+      throw error;
     }
   }, []);
 

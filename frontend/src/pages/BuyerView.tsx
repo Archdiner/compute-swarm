@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Terminal, ChevronRight, ArrowRight, Cpu, Activity, Wallet } from 'lucide-react';
 import { useWallet } from '../hooks/useWallet';
-import { useBuyerJobs, useJobStatus } from '../hooks/useJobs';
+import { useBuyerJobs } from '../hooks/useJobs';
 import { useUSDCBalance } from '../hooks/useUSDCBalance';
 import { apiClient } from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
