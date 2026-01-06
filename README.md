@@ -141,7 +141,7 @@ This project is built for the **x402 hackathon** and demonstrates real-world use
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/yourusername/compute-swarm.git
+git clone https://github.com/Archdiner/compute-swarm.git
 cd compute-swarm
 python -m venv venv
 source venv/bin/activate

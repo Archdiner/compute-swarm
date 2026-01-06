@@ -87,6 +87,8 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 frontend/.env.local
+package-lock.json
+frontend/package-lock.json
 
 # Secrets (extra safety)
 *private_key*

@@ -14,7 +14,7 @@ setup(
     description="Decentralized P2P GPU Marketplace using x402 protocol",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/compute-swarm",
+    url="https://github.com/Archdiner/compute-swarm",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
