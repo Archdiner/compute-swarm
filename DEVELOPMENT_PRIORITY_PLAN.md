@@ -19,6 +19,7 @@ The focus is now on **Tier 3: Advanced Features** (Multi-Node, Storage, Datasets
 **Status**: **FIXED** (Implemented in `src/execution/engine.py`)
 - Two-phase execution implemented:
   - Phase 1: Network enabled for setup (pip install, model download)
+  - Whitelist enforced via `src/execution/proxy.py`
   - Phase 2: Network disabled (`--network none`) for execution
 
 ---
