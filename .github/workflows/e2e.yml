@@ -1,0 +1,62 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Run E2E tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  e2e:
+    name: End-to-End Integration Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-e2e-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-e2e-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up environment
+        run: |
+          # Create minimal .env for E2E test
+          echo "DOCKER_ENABLED=false" >> .env
+          echo "SUPABASE_URL=https://mock.supabase.co" >> .env
+          echo "SUPABASE_ANON_KEY=mock-key" >> .env
+
+      - name: Run E2E Test
+        run: |
+          timeout 120 python scripts/test_e2e_job.py || exit_code=$?
+          if [ "${exit_code:-0}" -eq 124 ]; then
+            echo "E2E test timed out after 120 seconds"
+            exit 1
+          fi
+          exit ${exit_code:-0}
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            *.log
+            public_checkpoints/
+          retention-days: 7

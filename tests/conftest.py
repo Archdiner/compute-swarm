@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from fastapi.testclient import TestClient
 from eth_account import Account
 
@@ -113,7 +113,8 @@ class MockDatabaseClient:
         seller_address: str,
         gpu_type: GPUType,
         price_per_hour: Decimal,
-        vram_gb: Decimal
+        vram_gb: Decimal,
+        num_gpus: int = 1
     ) -> Optional[Dict[str, Any]]:
         """Atomically claim the next available job"""
         for job_id, job in self.jobs.items():
@@ -394,7 +395,14 @@ def patch_database(mock_db):
     """Automatically patch get_db_client for all tests"""
     with patch('src.database.get_db_client', return_value=mock_db):
         with patch('src.database.client.get_db_client', return_value=mock_db):
-            yield mock_db
+            # Also patch where it's imported in router modules
+            with patch('src.marketplace.routers.nodes.get_db_client', return_value=mock_db):
+                with patch('src.marketplace.routers.jobs.get_db_client', return_value=mock_db):
+                    with patch('src.marketplace.routers.stats.get_db_client', return_value=mock_db):
+                        with patch('src.marketplace.routers.general.get_db_client', return_value=mock_db):
+                            with patch('src.marketplace.routers.artifacts.get_db_client', return_value=mock_db):
+                                with patch('src.marketplace.routers.experiments.get_db_client', return_value=mock_db):
+                                    yield mock_db
 
 
 @pytest.fixture
@@ -406,7 +414,7 @@ def client() -> TestClient:
 @pytest.fixture
 async def async_client() -> AsyncClient:
     """Create async HTTP client for testing"""
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
 
