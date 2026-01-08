@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComputeHive | Your Cozy Compute Node</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        /* Pixel Art / Stardew Theme */
+        body {
+            font-family: 'VT323', monospace;
+            background-color: #5D4037;
+            /* Wood dark */
+            background-image:
+                radial-gradient(circle at 50% 50%, #795548 2px, transparent 2.5px),
+                radial-gradient(circle at 0% 0%, #795548 2px, transparent 2.5px);
+            background-size: 32px 32px;
+            color: #3E2723;
+        }
+
+        .font-pixel {
+            font-family: 'Press Start 2P', cursive;
+        }
+
+        .paper-panel {
+            background-color: #FFF8E1;
+            /* Parchment */
+            border: 4px solid #8D6E63;
+            box-shadow:
+                inset 0 0 0 4px #D7CCC8,
+                8px 8px 0px rgba(0, 0, 0, 0.3);
+            image-rendering: pixelated;
+        }
+
+        .wood-panel {
+            background-color: #A1887F;
+            border: 4px solid #4E342E;
+            color: #3E2723;
+            box-shadow:
+                inset 2px 2px 0 0 #D7CCC8,
+                inset -2px -2px 0 0 #3E2723,
+                4px 4px 0px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-pixel {
+            transition: all 0.1s;
+            position: relative;
+            top: 0;
+            left: 0;
+        }
+
+        .btn-pixel:active {
+            top: 4px;
+            left: 4px;
+            box-shadow: none !important;
+        }
+
+        .honey-text {
+            color: #FF6F00;
+            text-shadow: 2px 2px 0px #FFECB3;
+        }
+
+        .pixel-border {
+            box-shadow:
+                -4px 0 0 0 #3E2723,
+                4px 0 0 0 #3E2723,
+                0 -4px 0 0 #3E2723,
+                0 4px 0 0 #3E2723;
+            margin: 4px;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #5D4037;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #FFC107;
+            border: 2px solid #5D4037;
+        }
+
+        .scanlines {
+            background: linear-gradient(to bottom,
+                    rgba(255, 255, 255, 0),
+                    rgba(255, 255, 255, 0) 50%,
+                    rgba(0, 0, 0, 0.05) 50%,
+                    rgba(0, 0, 0, 0.05));
+            background-size: 100% 4px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            z-index: 999;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+    <div class="scanlines"></div>
+
+    <div class="w-full max-w-4xl paper-panel p-6 md:p-8 relative">
+        <!-- Decor: Corner Screws -->
+        <div
+            class="absolute top-2 left-2 w-3 h-3 bg-yellow-700 rounded-full border border-yellow-900 flex items-center justify-center">
+            <div class="w-full h-0.5 bg-yellow-900 rotate-45"></div>
+        </div>
+        <div
+            class="absolute top-2 right-2 w-3 h-3 bg-yellow-700 rounded-full border border-yellow-900 flex items-center justify-center">
+            <div class="w-full h-0.5 bg-yellow-900 rotate-45"></div>
+        </div>
+        <div
+            class="absolute bottom-2 left-2 w-3 h-3 bg-yellow-700 rounded-full border border-yellow-900 flex items-center justify-center">
+            <div class="w-full h-0.5 bg-yellow-900 rotate-45"></div>
+        </div>
+        <div
+            class="absolute bottom-2 right-2 w-3 h-3 bg-yellow-700 rounded-full border border-yellow-900 flex items-center justify-center">
+            <div class="w-full h-0.5 bg-yellow-900 rotate-45"></div>
+        </div>
+
+        <!-- Header -->
+        <div
+            class="flex flex-col md:flex-row justify-between items-center mb-8 border-b-4 border-dashed border-[#8D6E63] pb-6 gap-4">
+            <div class="flex items-center gap-4">
+                <div
+                    class="w-16 h-16 bg-[#FFC107] border-4 border-black flex items-center justify-center shadow-[4px_4px_0_0_rgba(0,0,0,0.2)]">
+                    <span class="text-4xl">🐝</span>
+                </div>
+                <div>
+                    <h1 class="font-pixel text-xl md:text-2xl text-[#3E2723] leading-tight">COMPUTE<br><span
+                            class="text-[#FF6F00]">HIVE</span></h1>
+                    <p class="text-xl text-[#795548]">Node Management System v1.1</p>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-end gap-2">
+                <div id="status-indicator"
+                    class="flex items-center gap-2 px-4 py-1 bg-[#3E2723] text-[#FFC107] border-2 border-[#FFC107] shadow-md">
+                    <span id="status-dot" class="w-2 h-2 rounded-full bg-gray-500 animate-pulse"></span>
+                    <span id="status-text" class="text-xl tracking-wider">OFFLINE</span>
+                </div>
+                <button id="toggle-btn"
+                    class="font-pixel text-xs px-6 py-3 bg-[#8BC34A] border-b-4 border-r-4 border-[#33691E] text-white hover:bg-[#7CB342] btn-pixel shadow-[4px_4px_0_0_rgba(0,0,0,0.3)]">
+                    OPEN HIVE GATE
+                </button>
+            </div>
+        </div>
+
+        <!-- Warning Area -->
+        <div id="wallet-warning"
+            class="hidden mb-6 p-4 bg-[#FFECB3] border-4 border-[#FFA000] text-[#E65100] flex items-center gap-4 relative">
+            <span class="text-3xl">⚠️</span>
+            <div>
+                <h3 class="font-pixel text-xs mb-1">NEW BEEKEEPER DETECTED!</h3>
+                <p class="text-lg leading-tight">A wallet was auto-created. Check your local files `(.env.local)` and
+                    SAVE YOUR KEY immediately!</p>
+            </div>
+        </div>
+
+        <!-- Main Stats Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <!-- Honey Pot (Earnings) -->
+            <div class="wood-panel p-4 flex flex-col items-center text-center">
+                <div class="bg-[#5D4037] w-full p-2 mb-2 text-[#FFC107] font-pixel text-xs border-2 border-[#3E2723]">
+                    HONEY POT</div>
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="text-4xl">🍯</span>
+                    <span id="earnings-val" class="font-pixel text-xl md:text-2xl honey-text">0.0000</span>
+                </div>
+                <div
+                    class="text-[#3E2723] text-lg w-full flex justify-between px-2 border-t-2 border-dashed border-[#5D4037] pt-2 mt-auto">
+                    <span>Tasks:</span>
+                    <span id="jobs-count" class="font-bold">0</span>
+                </div>
+            </div>
+
+            <!-- Hive Warmth (GPU) -->
+            <div class="wood-panel p-4 flex flex-col items-center">
+                <div class="bg-[#5D4037] w-full p-2 mb-2 text-[#8BC34A] font-pixel text-xs border-2 border-[#3E2723]">
+                    HIVE WARMTH</div>
+                <div id="gpu-name"
+                    class="font-bold text-center text-[#3E2723] text-xl mb-2 line-clamp-1 w-full bg-[#FFF8E1] px-2 py-1 border-2 border-[#3E2723]">
+                    Unknown GPU</div>
+
+                <div class="w-full mt-2">
+                    <div class="flex justify-between text-[#3E2723] text-lg mb-1">
+                        <span>CORE TEMP</span>
+                        <span id="gpu-temp-val">--°C</span>
+                    </div>
+                    <div class="w-full bg-[#3E2723] h-4 border-2 border-white p-0.5">
+                        <div id="gpu-temp-bar" class="bg-[#FF5722] h-full w-0 transition-all duration-1000"></div>
+                    </div>
+                </div>
+
+                <div class="w-full mt-2">
+                    <div class="flex justify-between text-[#3E2723] text-lg mb-1">
+                        <span>VRAM</span>
+                        <span id="gpu-mem-val">--GB</span>
+                    </div>
+                    <div class="w-full bg-[#3E2723] h-4 border-2 border-white p-0.5">
+                        <div id="gpu-mem-bar" class="bg-[#29B6F6] h-full w-0 transition-all duration-1000"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Beekeeper Info -->
+            <div class="wood-panel p-4 flex flex-col">
+                <div
+                    class="bg-[#5D4037] w-full p-2 mb-2 text-[#4FC3F7] font-pixel text-xs border-2 border-[#3E2723] text-center">
+                    LICENSE</div>
+                <div class="space-y-2 text-[#3E2723] text-lg">
+                    <div class="flex flex-col">
+                        <span class="text-xs opacity-70">ID</span>
+                        <span id="node-id"
+                            class="font-mono bg-[#FFF8E1] px-1 border border-[#3E2723] truncate">...</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-xs opacity-70">WALLET</span>
+                        <span id="wallet-addr"
+                            class="font-mono bg-[#FFF8E1] px-1 border border-[#3E2723] truncate">...</span>
+                    </div>
+                    <div class="flex justify-between items-end border-t-2 border-dotted border-[#3E2723] pt-1">
+                        <span class="text-xs opacity-70">RATE</span>
+                        <span class="font-bold text-green-800">$<span id="rate-val">0.00</span>/hr</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Scroll (Journal) -->
+        <div class="bg-[#3E2723] p-1 border-4 border-[#5D4037] shadow-inner">
+            <div class="bg-[#FFF8E1] h-48 overflow-y-auto p-4 font-mono text-lg border-2 border-[#8D6E63] relative"
+                id="logs-container">
+                <div class="sticky top-0 right-0 float-right text-[#3E2723] opacity-20 text-4xl select-none">✏️</div>
+                <div class="mb-2 text-[#5D4037] border-b border-[#8D6E63] pb-1">-- HIVE ACTIVITY LOG --</div>
+            </div>
+        </div>
+
+        <div class="text-center mt-4 text-[#8D6E63] text-lg">
+            ~ Keep your hive online to earn Royal Jelly ~
+        </div>
+
+    </div>
+
+    <script>
+        // State
+        let isRunning = false;
+
+        // Elements
+        const toggleBtn = document.getElementById('toggle-btn');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const statusIndicator = document.getElementById('status-indicator');
+        const logsContainer = document.getElementById('logs-container');
+
+        // Toggle Start/Stop
+        toggleBtn.addEventListener('click', async () => {
+            const action = isRunning ? 'stop' : 'start';
+            toggleBtn.disabled = true;
+            toggleBtn.style.opacity = '0.7';
+
+            try {
+                const res = await fetch(`/api/control/${action}`, { method: 'POST' });
+                if (!res.ok) throw new Error('Action failed');
+
+                await updateStatus();
+            } catch (error) {
+                log(`[ERROR] Failed to ${action}: ${error.message}`, 'red');
+            } finally {
+                toggleBtn.disabled = false;
+                toggleBtn.style.opacity = '1';
+            }
+        });
+
+        // Add log message
+        function log(msg, level = 'INFO') {
+            const div = document.createElement('div');
+            div.className = 'mb-1 leading-tight font-mono text-sm';
+            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            let colorStyle = '';
+            // Color Mapping
+            const uLevel = level.toUpperCase();
+            if (uLevel.includes('ERROR') || uLevel.includes('FAIL')) colorStyle = 'color: #D32F2F; font-weight: bold;';
+            else if (uLevel.includes('WARN')) colorStyle = 'color: #E65100;';
+            else if (uLevel.includes('SUCCESS') || uLevel.includes('COMPLETE')) colorStyle = 'color: #388E3C; font-weight: bold;';
+            else if (uLevel.includes('DEBUG')) colorStyle = 'color: #795548; opacity: 0.7;';
+            else colorStyle = 'color: #3E2723;'; // Default
+
+            div.innerHTML = `<span class="opacity-50 select-none">[${timestamp}]</span> <span style="${colorStyle}">${msg}</span>`;
+
+            logsContainer.appendChild(div);
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+
+        // WebSocket Connection
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // Assuming port is same as page, which is true for /
+            const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                log("HIVE NET CONNECTED", "SUCCESS");
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    let msg = '';
+                    if (data.event) msg += data.event;
+                    if (data.message) msg += ": " + data.message;
+
+                    // Add attributes
+                    const ignoreKeys = ['level', 'timestamp', 'event', 'message'];
+                    const attrs = Object.keys(data)
+                        .filter(k => !ignoreKeys.includes(k))
+                        .map(k => `${k}=${data[k]}`)
+                        .join(' ');
+
+                    if (attrs) msg += ` [${attrs}]`;
+
+                    log(msg, data.level);
+                } catch (e) {
+                    log(event.data);
+                }
+            };
+
+            ws.onclose = () => {
+                log("HIVE NET LOST. RECONNECTING...", "WARNING");
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WS Error", err);
+            };
+        }
+
+        // Fetch and update status
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                // Update Run State
+                isRunning = data.running;
+                if (isRunning) {
+                    toggleBtn.textContent = 'CLOSE HIVE';
+                    toggleBtn.className = "font-pixel text-xs px-6 py-3 bg-[#D32F2F] border-b-4 border-r-4 border-[#B71C1C] text-white hover:bg-[#C62828] btn-pixel shadow-[4px_4px_0_0_rgba(0,0,0,0.3)]";
+
+                    if (data.is_busy) {
+                        statusDot.className = "w-2 h-2 rounded-full bg-[#FFC107] animate-ping";
+                        statusText.textContent = "POLLINATING";
+                        statusText.style.color = "#FFC107";
+                    } else {
+                        statusDot.className = "w-2 h-2 rounded-full bg-[#76FF03] animate-pulse";
+                        statusText.textContent = "HIVE ACTIVE";
+                        statusText.style.color = "#76FF03";
+                    }
+                } else {
+                    toggleBtn.textContent = 'OPEN HIVE';
+                    toggleBtn.className = "font-pixel text-xs px-6 py-3 bg-[#8BC34A] border-b-4 border-r-4 border-[#33691E] text-white hover:bg-[#7CB342] btn-pixel shadow-[4px_4px_0_0_rgba(0,0,0,0.3)]";
+
+                    statusDot.className = "w-2 h-2 rounded-full bg-gray-500";
+                    statusText.textContent = "SLEEPING";
+                    statusText.style.color = "gray";
+                }
+
+                // Update Values
+                document.getElementById('node-id').textContent = data.node_id || 'REGISTERING...';
+                document.getElementById('node-id').title = data.node_id || '';
+
+                document.getElementById('wallet-addr').textContent = data.wallet_address ?
+                    data.wallet_address.substring(0, 6) + '...' + data.wallet_address.substring(38) : '...';
+
+                if (data.generated_wallet) {
+                    document.getElementById('wallet-warning').classList.remove('hidden');
+                }
+
+                document.getElementById('earnings-val').textContent = parseFloat(data.earnings).toFixed(4);
+                document.getElementById('jobs-count').textContent = data.jobs_completed;
+                document.getElementById('rate-val').textContent = data.price_per_hour;
+
+                // GPU Info
+                if (data.gpu) {
+                    document.getElementById('gpu-name').textContent = data.gpu.name;
+                    // Mock Bars
+                    if (isRunning) {
+                        const temp = Math.floor(Math.random() * 10) + 50;
+                        const vram = Math.floor(Math.random() * 5) + 10;
+                        document.getElementById('gpu-temp-val').textContent = `${temp}°C`;
+                        document.getElementById('gpu-temp-bar').style.width = `${temp}%`;
+                        document.getElementById('gpu-mem-val').textContent = `${vram}%`;
+                        document.getElementById('gpu-mem-bar').style.width = `${vram}%`;
+                    }
+                }
+
+            } catch (error) {
+                console.error("Status fetch error", error);
+            }
+        }
+
+        // Init
+        updateStatus();
+        setInterval(updateStatus, 2000); // 2s polling
+        connectWebSocket();
+        log("Hive System Initialized.");
+
+    </script>
+</body>
+
+</html>
