@@ -76,7 +76,8 @@ class JobExecutor:
         model_cache_dir: Optional[Path] = None,
         gpu_type: GPUExecutionType = "none",
         docker_network_enabled: bool = True,
-        docker_setup_timeout: int = 300
+        docker_setup_timeout: int = 300,
+        p2p_upload_dir: Optional[Path] = None
     ):
         """
         Initialize executor
@@ -113,6 +114,7 @@ class JobExecutor:
         # Network access configuration
         self.docker_network_enabled = docker_network_enabled
         self.docker_setup_timeout = docker_setup_timeout
+        self.p2p_upload_dir = p2p_upload_dir
         
         # Check Docker availability on init
         self._docker_available: Optional[bool] = None
@@ -426,7 +428,11 @@ class JobExecutor:
             # Scan and upload checkpoints
             checkpoint_ids = []
             try:
-                checkpoint_manager = create_checkpoint_manager(job_id, job_workspace)
+                checkpoint_manager = create_checkpoint_manager(
+                    job_id, 
+                    job_workspace, 
+                    p2p_upload_dir=self.p2p_upload_dir
+                )
                 checkpoint_ids = await checkpoint_manager.scan_and_upload_checkpoints()
                 if checkpoint_ids:
                     logger.info(

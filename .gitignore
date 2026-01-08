@@ -94,3 +94,7 @@ frontend/package-lock.json
 *private_key*
 *secret*
 credentials.json
+
+# Runtime directories
+public_checkpoints/
+temp_storage/

@@ -48,8 +48,9 @@ class TunnelManager:
             return self.public_url
             
         except Exception as e:
-            logger.error("tunnel_start_failed", error=str(e))
-            raise
+            logger.error("tunnel_start_failed", error=str(e), message="Falling back to local URL")
+            self.public_url = f"http://localhost:{self.port}"
+            return self.public_url
 
     def _connect(self):
         """Internal method to establish connection"""
@@ -71,33 +72,62 @@ class TunnelManager:
             try:
                 await asyncio.sleep(10) # Check every 10 seconds
                 
-                if not self.tunnel:
-                    continue
-                    
-                # specific check for ngrok tunnel health could go here
-                # For now, we rely on the fact that if the process dies, pyngrok might not tell us immediately
-                # but we can try to hit the local inspection API or check pyngrok state
+                # Active check: Verify tunnel is still in ngrok's active list
+                active_tunnels = ngrok.get_tunnels()
+                is_active = any(t.public_url == self.public_url for t in active_tunnels)
                 
-                # Simple check: is the tunnel object still valid?
-                # In a real scenario, we might want to curl the public URL or check ngrok API
+                if not is_active:
+                    logger.warning("tunnel_not_found_active", public_url=self.public_url)
+                    await self._reconnect()
                 
-                pass 
-
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error("tunnel_monitor_error", error=str(e))
-                # If critical error, try reconnect
+                # If exception occurs, wait a bit and try to reconnect
+                await asyncio.sleep(5)
                 await self._reconnect()
 
     async def _reconnect(self):
-        """Attempt to reconnect the tunnel"""
+        """Attempt to reconnect the tunnel with exponential backoff"""
         logger.info("tunnel_reconnecting")
-        self.stop()
-        await asyncio.sleep(5) # Wait before reconnecting
-        try:
-            self._connect()
-            logger.info("tunnel_reconnected", new_url=self.public_url)
-        except Exception as e:
-            logger.error("tunnel_reconnect_failed", error=str(e))
+        
+        self.stop_monitor() # Stop monitoring while reconnecting
+        
+        if self.tunnel:
+            try:
+                ngrok.disconnect(self.public_url)
+            except:
+                pass
+            self.tunnel = None
+            self.public_url = None
+
+        max_retries = 5
+        base_delay = 2
+        
+        for i in range(max_retries):
+            try:
+                delay = base_delay * (2 ** i)
+                logger.info("reconnect_attempt", attempt=i+1, delay=delay)
+                await asyncio.sleep(delay)
+                
+                self._connect()
+                
+                # Restart monitoring
+                self._monitor_task = asyncio.create_task(self._monitor_loop())
+                
+                logger.info("tunnel_reconnected", new_url=self.public_url)
+                return
+            except Exception as e:
+                logger.error("reconnect_attempt_failed", attempt=i+1, error=str(e))
+                
+        logger.critical("tunnel_reconnection_exhausted")
+
+    def stop_monitor(self):
+        """Internal helper to stop monitor loop without stopping tunnel"""
+        if hasattr(self, '_monitor_task') and self._monitor_task:
+            self._monitor_task.cancel()
+            self._monitor_task = None
 
     def stop(self):
         """

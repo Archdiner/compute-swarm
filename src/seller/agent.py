@@ -25,6 +25,8 @@ from src.marketplace.models import NodeRegistration, GPUType
 from src.config import get_seller_config
 from src.execution import JobExecutor
 from src.payments import PaymentProcessor, calculate_job_cost, calculate_estimated_cost
+from src.networking.tunnel import TunnelManager
+from src.storage.transfer import start_file_server_background
 
 # Global Log Queue for Broadcasting
 log_queue = asyncio.Queue()
@@ -113,6 +115,10 @@ class SellerAgent:
         # Components
         self.executor: Optional[JobExecutor] = None
         self.payment_processor: Optional[PaymentProcessor] = None
+        self.tunnel_manager: Optional[TunnelManager] = None
+        self.file_server = None
+        self.p2p_url: Optional[str] = None
+        self.p2p_storage_dir = Path("public_checkpoints").absolute()
         
         # Web Server
         self.app = FastAPI()
@@ -288,12 +294,26 @@ class SellerAgent:
             model_cache_dir=model_cache_path if self.config.model_cache_enabled else None,
             gpu_type=self.gpu_info.gpu_type.value,
             docker_network_enabled=self.config.docker_network_enabled,
-            docker_setup_timeout=self.config.docker_setup_timeout
+            docker_setup_timeout=self.config.docker_setup_timeout,
+            p2p_upload_dir=self.p2p_storage_dir
         )
         
         # logger.info("executor_initialized")
 
         await self._check_docker_setup()
+        
+        # Start P2P Services
+        logger.info("starting_p2p_services", storage_dir=str(self.p2p_storage_dir))
+        p2p_port = 8005
+        self.file_server = start_file_server_background(port=p2p_port, storage_dir=str(self.p2p_storage_dir))
+        
+        self.tunnel_manager = TunnelManager(port=p2p_port)
+        try:
+            self.p2p_url = await self.tunnel_manager.start()
+            logger.info("p2p_active", url=self.p2p_url)
+        except Exception as e:
+            logger.warning("p2p_tunnel_failed", error=str(e))
+        
         await self.register()
 
         self.running = True
@@ -431,9 +451,13 @@ class SellerAgent:
                 await asyncio.sleep(30)
                 if not self.node_id: continue
                 is_available = (not self.is_busy) and self.agent_loop_running
+                params = {"available": is_available}
+                if self.p2p_url:
+                    params["p2p_url"] = self.p2p_url
+                    
                 await self.client.post(
                     f"{self.config.marketplace_url}/api/v1/nodes/{self.node_id}/heartbeat",
-                    params={"available": is_available}
+                    params=params
                 )
             except Exception:
                 pass
@@ -580,6 +604,12 @@ class SellerAgent:
 
 
 async def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="ComputeSwarm Seller Agent")
+    parser.add_argument("--one-click", action="store_true", help="Start in one-click mode (auto-generate wallet if missing)")
+    parser.add_argument("--port", type=int, default=8001, help="Local dashboard port")
+    args = parser.parse_args()
+
     structlog.configure(
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
@@ -602,7 +632,7 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
-    port = int(os.getenv("SELLER_PORT", "8001"))
+    port = args.port
     config = Config(app=agent.app, host="0.0.0.0", port=port, log_level="warning")
     server = Server(config)
     server_task = asyncio.create_task(server.serve())

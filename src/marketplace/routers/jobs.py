@@ -6,9 +6,10 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Request, HTTPException, status
 import structlog
 
-from src.marketplace.models import GPUType, JobSubmissionRequest
+from src.marketplace.models import GPUType, JobSubmissionRequest, JobTemplateSubmissionRequest
 from src.models import ComputeJob, JobStatus
 from src.database import get_db_client
+from src.templates import get_template, list_templates
 from src.marketplace.dependencies import limiter, logger, get_buyer_key, get_node_key
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Jobs"])
@@ -145,6 +146,65 @@ async def submit_job(
         "message": "Job submitted to queue. Sellers will claim when available.",
         "buyer_address": job_request.buyer_address,
         "max_price_per_hour": job_request.max_price_per_hour
+    }
+
+
+@router.post("/submit_template", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute", key_func=get_buyer_key)
+async def submit_template_job(
+    request: Request,
+    template_request: JobTemplateSubmissionRequest
+):
+    """
+    Submit a job via a template (e.g. lora_finetune)
+    """
+    db = get_db_client()
+    
+    # Resolve template
+    template = get_template(template_request.template_name)
+    if not template:
+        available = list_templates()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Template '{template_request.template_name}' not found. Available: {available}"
+        )
+    
+    # Render script and requirements
+    try:
+        script = template.render_script(template_request.parameters)
+        requirements = template.get_requirements(template_request.parameters)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to render template: {str(e)}"
+        )
+    
+    # Create job
+    job = ComputeJob(
+        buyer_address=template_request.buyer_address,
+        script=script,
+        requirements=requirements,
+        max_price_per_hour=Decimal(str(template_request.max_price_per_hour)),
+        timeout_seconds=template_request.timeout_seconds,
+        required_gpu_type=GPUType(template_request.required_gpu_type) if template_request.required_gpu_type else None,
+        min_vram_gb=Decimal(str(template_request.min_vram_gb)) if template_request.min_vram_gb else None,
+        num_gpus=template_request.num_gpus
+    )
+    
+    job_id = await db.submit_job(job)
+    
+    logger.info(
+        "template_job_submitted",
+        job_id=job_id,
+        template=template_request.template_name,
+        buyer=template_request.buyer_address
+    )
+    
+    return {
+        "job_id": job_id,
+        "status": "PENDING",
+        "template_name": template_request.template_name,
+        "message": f"Job submitted via template '{template_request.template_name}'"
     }
 
 

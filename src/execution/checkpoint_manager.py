@@ -19,56 +19,82 @@ logger = structlog.get_logger()
 class CheckpointManager:
     """Manages checkpoint detection and upload"""
     
-    # Common checkpoint file patterns
-    CHECKPOINT_PATTERNS = [
-        r"checkpoint.*\.(pt|pth|ckpt|safetensors)",
-        r"model.*\.(pt|pth|ckpt|safetensors)",
-        r".*epoch.*\.(pt|pth|ckpt|safetensors)",
-        r".*step.*\.(pt|pth|ckpt|safetensors)",
+    # Common checkpoint file patterns (glob style)
+    CHECKPOINT_GLOBS = [
+        "**/checkpoint*.[pP][tT]",
+        "**/checkpoint*.[pP][tT][hH]",
+        "**/checkpoint*.[cC][kK][pP][tT]",
+        "**/*.safetensors",
+        "**/*epoch*.[pP][tT]*",
+        "**/*step*.[pP][tT]*",
+        "**/pytorch_model.bin",
+        "**/adapter_model.safetensors"
     ]
     
-    def __init__(self, job_id: str, workspace_path: Path):
+    def __init__(self, job_id: str, workspace_path: Path, p2p_upload_dir: Optional[Path] = None):
         """
         Initialize checkpoint manager
         
         Args:
             job_id: Job ID
             workspace_path: Path to workspace directory
+            p2p_upload_dir: Path to copy checkpoints for P2P delivery
         """
         self.job_id = job_id
         self.workspace_path = workspace_path
         self.checkpoint_dir = workspace_path / "checkpoints"
-        self.storage = get_storage_client()
-        self.db = get_db_client()
+        self.p2p_upload_dir = p2p_upload_dir
+        # Lazy-loaded storage and db clients (to avoid errors when not configured)
+        self._storage = None
+        self._db = None
         self.uploaded_checkpoints: set = set()  # Track uploaded files
+    
+    @property
+    def storage(self):
+        if self._storage is None:
+            self._storage = get_storage_client()
+        return self._storage
+    
+    @property
+    def db(self):
+        if self._db is None:
+            self._db = get_db_client()
+        return self._db
+
     
     def detect_checkpoint_files(self) -> List[Path]:
         """
-        Detect checkpoint files in workspace
+        Detect checkpoint files in workspace using glob patterns
         
         Returns:
             List of checkpoint file paths
         """
         checkpoints = []
-        
-        # Check dedicated checkpoints directory
-        if self.checkpoint_dir.exists():
-            for pattern in self.CHECKPOINT_PATTERNS:
-                for file_path in self.checkpoint_dir.glob("**/*"):
-                    if file_path.is_file() and re.search(pattern, file_path.name, re.IGNORECASE):
-                        checkpoints.append(file_path)
-        
-        # Also check workspace root for checkpoint files
-        for pattern in self.CHECKPOINT_PATTERNS:
-            for file_path in self.workspace_path.glob("*"):
-                if file_path.is_file() and re.search(pattern, file_path.name, re.IGNORECASE):
+        all_files = list(self.workspace_path.glob("**/*"))
+        with open("debug_scan.log", "a") as f:
+            f.write(f"\n--- SCAN for {self.job_id} ---\n")
+            f.write(f"Workspace: {self.workspace_path}\n")
+            f.write(f"Total files found: {len(all_files)}\n")
+            for fl in all_files:
+                f.write(f"  {fl}\n")
+
+        for pattern in self.CHECKPOINT_GLOBS:
+            found = list(self.workspace_path.glob(pattern))
+            if found:
+                with open("debug_scan.log", "a") as f:
+                    f.write(f"Pattern {pattern} matched: {[str(x) for x in found]}\n")
+            for file_path in found:
+                if file_path.is_file():
                     checkpoints.append(file_path)
         
         # Remove duplicates and filter out already uploaded
         unique_checkpoints = []
+        seen = set()
         for cp in checkpoints:
-            if str(cp) not in self.uploaded_checkpoints:
+            cp_str = str(cp)
+            if cp_str not in self.uploaded_checkpoints and cp_str not in seen:
                 unique_checkpoints.append(cp)
+                seen.add(cp_str)
         
         return unique_checkpoints
     
@@ -113,7 +139,8 @@ class CheckpointManager:
     
     async def upload_checkpoint(self, file_path: Path) -> Optional[str]:
         """
-        Upload a checkpoint file to storage and save metadata
+        Upload a checkpoint file to storage and save metadata.
+        P2P copy happens first for guaranteed local delivery.
         
         Args:
             file_path: Path to checkpoint file
@@ -121,61 +148,82 @@ class CheckpointManager:
         Returns:
             Checkpoint ID if successful, None otherwise
         """
+        checkpoint_id = None
+        
         try:
-            # Generate storage path
-            storage_path = self.storage.generate_storage_path(
-                job_id=self.job_id,
-                file_name=file_path.name,
-                file_type="checkpoint"
-            )
-            
             # Calculate file size and checksum
             file_size = file_path.stat().st_size
             checksum = self._calculate_checksum(file_path)
             
-            # Upload file (use chunked upload for large files)
-            if file_size > 100 * 1024 * 1024:  # > 100MB
-                await self.storage.upload_chunked(
-                    file_path=str(file_path),
-                    storage_path=storage_path
+            # P2P FIRST: Copy to P2P storage area for immediate swarm delivery
+            # This is independent of central storage for local/swarm robustness
+            p2p_filename = None
+            if self.p2p_upload_dir:
+                try:
+                    import shutil
+                    self.p2p_upload_dir.mkdir(parents=True, exist_ok=True)
+                    p2p_filename = f"{self.job_id}_{file_path.name}"
+                    p2p_path = self.p2p_upload_dir / p2p_filename
+                    shutil.copy2(file_path, p2p_path)
+                    logger.info("checkpoint_prepared_for_p2p", 
+                               job_id=self.job_id, 
+                               p2p_path=str(p2p_path),
+                               filename=p2p_filename)
+                    checkpoint_id = f"p2p_{self.job_id}"
+                except Exception as e:
+                    logger.warning("p2p_checkpoint_copy_failed", job_id=self.job_id, error=str(e))
+            
+            # Central storage (best-effort, wrapped in try-except)
+            storage_path = None
+            try:
+                storage_path = self.storage.generate_storage_path(
+                    job_id=self.job_id,
+                    file_name=file_path.name,
+                    file_type="checkpoint"
                 )
-            else:
                 await self.storage.upload_file(
                     file_path=str(file_path),
                     storage_path=storage_path
                 )
+            except Exception as e:
+                logger.warning("central_storage_upload_failed", job_id=self.job_id, error=str(e))
+                storage_path = None
             
             # Parse metadata from filename
             metadata = self.parse_checkpoint_metadata(file_path)
             
-            # Save checkpoint metadata to database
-            checkpoint_id = await self.db.save_checkpoint(
-                job_id=self.job_id,
-                storage_path=storage_path,
-                file_size_bytes=file_size,
-                checkpoint_name=file_path.name,
-                epoch=metadata.get("epoch"),
-                step=metadata.get("step"),
-                loss=metadata.get("loss"),
-                checksum=checksum
-            )
+            # Save checkpoint metadata to database if possible
+            try:
+                db_checkpoint_id = await self.db.save_checkpoint(
+                    job_id=self.job_id,
+                    storage_path=storage_path or f"p2p://{self.job_id}/{file_path.name}",
+                    file_size_bytes=file_size,
+                    checkpoint_name=file_path.name,
+                    epoch=metadata.get("epoch"),
+                    step=metadata.get("step"),
+                    loss=metadata.get("loss"),
+                    checksum=checksum
+                )
+                if db_checkpoint_id:
+                    checkpoint_id = db_checkpoint_id
+            except Exception as e:
+                logger.warning("db_checkpoint_save_failed", job_id=self.job_id, error=str(e))
             
-            # Mark as uploaded
+            # Mark as uploaded (at least attempted/P2P)
             self.uploaded_checkpoints.add(str(file_path))
             
             logger.info(
-                "checkpoint_uploaded",
+                "checkpoint_processed",
                 checkpoint_id=checkpoint_id,
                 job_id=self.job_id,
                 file_name=file_path.name,
-                file_size=file_size,
-                epoch=metadata.get("epoch"),
-                step=metadata.get("step")
+                p2p_ready=bool(self.p2p_upload_dir and p2p_filename)
             )
             
             return checkpoint_id
             
         except Exception as e:
+
             logger.error(
                 "checkpoint_upload_failed",
                 job_id=self.job_id,
@@ -217,16 +265,21 @@ class CheckpointManager:
         return uploaded_ids
 
 
-def create_checkpoint_manager(job_id: str, workspace_path: Path) -> CheckpointManager:
+def create_checkpoint_manager(
+    job_id: str, 
+    workspace_path: Path, 
+    p2p_upload_dir: Optional[Path] = None
+) -> CheckpointManager:
     """
     Create a checkpoint manager for a job
     
     Args:
         job_id: Job ID
         workspace_path: Workspace directory path
+        p2p_upload_dir: Path to copy checkpoints for P2P delivery
         
     Returns:
         CheckpointManager instance
     """
-    return CheckpointManager(job_id, workspace_path)
+    return CheckpointManager(job_id, workspace_path, p2p_upload_dir)
 

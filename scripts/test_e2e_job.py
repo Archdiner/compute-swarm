@@ -46,9 +46,12 @@ def run_marketplace():
         async def get_node(self, node_id):
             return self.nodes.get(node_id)
 
-        async def update_node_heartbeat(self, node_id, p2p_url=None):
+        async def update_node_heartbeat(self, node_id, available=True, p2p_url=None):
             if node_id in self.nodes:
                 self.nodes[node_id]["last_heartbeat"] = datetime.utcnow().isoformat()
+                self.nodes[node_id]["is_available"] = available
+                if p2p_url:
+                    self.nodes[node_id]["p2p_url"] = p2p_url
             return True
 
         async def set_node_availability(self, node_id, available):
@@ -99,7 +102,12 @@ def run_marketplace():
             return True
             
         async def get_job(self, job_id):
-            return self.jobs.get(job_id)
+            job = self.jobs.get(job_id)
+            if job and job.get("node_id"):
+                node = self.nodes.get(job["node_id"])
+                if node:
+                    job["p2p_url"] = node.get("p2p_url")
+            return job
             
         async def get_queue_stats(self):
             return []
@@ -166,8 +174,8 @@ async def run_test():
     # and avoid asyncio loop conflicts if we tried to run two loops in one process
     print("Starting Seller Agent...")
     seller_proc = subprocess.Popen(
-        [sys.executable, "src/seller/agent.py"],
-        env={**os.environ, "MARKETPLACE_URL": MARKETPLACE_URL, "PYTHONUNBUFFERED": "1", "SELLER_PORT": str(SELLER_PORT), "DOCKER_ENABLED": "false"},
+        [sys.executable, "src/seller/agent.py", "--port", "8010"],
+        env={**os.environ, "MARKETPLACE_URL": MARKETPLACE_URL, "PYTHONUNBUFFERED": "1", "SELLER_PORT": "8010", "DOCKER_ENABLED": "false"},
         stdout=sys.stdout,
         stderr=sys.stderr
     )
@@ -186,6 +194,18 @@ async def run_test():
                 break
             await asyncio.sleep(1)
             
+    if node_id:
+        print("Waiting for P2P URL to be advertised via heartbeat...")
+        async with httpx.AsyncClient() as client:
+            for _ in range(40): # Wait up to 40s for heartbeat
+                resp = await client.get(f"{MARKETPLACE_URL}/api/v1/nodes")
+                data = resp.json()
+                nodes = data.get("nodes", [])
+                if nodes and nodes[0].get("p2p_url"):
+                    print(f"✅ P2P URL active: {nodes[0]['p2p_url']}")
+                    break
+                await asyncio.sleep(1)
+            
     if not node_id:
         print("❌ Seller failed to register.")
         seller_proc.terminate()
@@ -198,12 +218,20 @@ async def run_test():
     buyer_address = "0xbuyer123"
     
     # Simple job: Print, calculate, sleep briefly
+    # Simple job: Print, calculate, and create a fake checkpoint file
     script = """
 import time
+import os
+from pathlib import Path
+
 print('Hello E2E World!')
-print('Calculating...')
-result = 2 + 2
-print(f'2 + 2 = {result}')
+# Simulate checkpoint creation (CheckpointManager expects them in 'checkpoints/' folder)
+checkpoint_dir = Path('checkpoints')
+checkpoint_dir.mkdir(exist_ok=True)
+with open(checkpoint_dir / 'adapter_model.safetensors', 'w') as f:
+    f.write('fake-weights-data')
+
+print('Checkpoint created.')
 time.sleep(1)
 """
     
@@ -237,16 +265,44 @@ time.sleep(1)
             status = job["status"]
             print(f"Job Status: {status}")
             
-            if status == "completed":
+            if status == "COMPLETED":
                 print("✅ Job Completed!")
                 print(f"Output:\n{job.get('output', 'No output recorded')}")
-                if "Hello E2E World!" in job.get("output", ""):
-                    print("✅ Output matches expected!")
-                    success = True
+                
+                # Verify P2P Download
+                p2p_url = job.get("p2p_url")
+                if p2p_url:
+                    print(f"🔗 P2P URL detected: {p2p_url}")
+                    
+                    # Diagnostics: list files
+                    from pathlib import Path
+                    p2p_dir = Path("public_checkpoints")
+                    if p2p_dir.exists():
+                        print(f"📂 Contents of {p2p_dir.absolute()}:")
+                        for f in p2p_dir.glob("**/*"):
+                            if f.is_file():
+                                print(f"  - {f.name} ({f.stat().st_size} bytes)")
+                    else:
+                        print(f"❌ {p2p_dir.absolute()} does not exist!")
+
+                    # In E2E, we need to wait for the FileServer to actually have the file
+                    # The seller agent copies it after completion.
+                    print("Attempting to download checkpoint via P2P...")
+                    try:
+                        # The filename is {job_id}_adapter_model.safetensors (mocked in our test script below)
+                        checkpoint_name = f"{job_id}_adapter_model.safetensors"
+                        dl_resp = await client.get(f"{p2p_url}/files/{checkpoint_name}", timeout=10.0)
+                        if dl_resp.status_code == 200:
+                            print(f"✅ P2P Download Successful! Size: {len(dl_resp.content)} bytes")
+                            success = True
+                        else:
+                            print(f"❌ P2P Download Failed: {dl_resp.status_code}")
+                    except Exception as e:
+                        print(f"❌ P2P Download Error: {str(e)}")
                 else:
-                    print("❌ Output missing expected text.")
+                    print("❌ No P2P URL found in job status")
                 break
-            elif status == "failed":
+            elif status == "FAILED":
                 print(f"❌ Job Failed! Error: {job.get('error')}")
                 break
                 

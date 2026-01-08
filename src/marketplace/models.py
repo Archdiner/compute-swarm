@@ -118,14 +118,18 @@ class JobSubmissionRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(default=None)
 
     class Config:
-        json_schema_extra = {
-            "example": {
-                "buyer_address": "0x...",
-                "script": "print('hello')",
-                "requirements": "numpy",
-                "max_price_per_hour": 1.0
-            }
-        }
+        pass
+
+class JobTemplateSubmissionRequest(BaseModel):
+    """Request to execute a compute job via a template"""
+    buyer_address: str = Field(description="Wallet address of the buyer")
+    template_name: str = Field(description="Name of the job template (e.g. 'lora_finetune')")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Parameters for the template")
+    max_price_per_hour: float = Field(default=10.0, description="Max hourly price in USD")
+    timeout_seconds: int = Field(default=3600, description="Job timeout")
+    required_gpu_type: Optional[str] = Field(default=None)
+    min_vram_gb: Optional[float] = Field(default=None)
+    num_gpus: int = Field(default=1)
 
 class Job(BaseModel):
     """Represents a compute job"""

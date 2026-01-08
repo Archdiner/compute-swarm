@@ -1,8 +1,8 @@
 # ComputeSwarm 🐝
 
-**Decentralized GPU Marketplace with x402 Micropayments**
+**The Hardware Layer for the Agentic Economy**
 
-Turn idle GPUs into income. Rent compute by the second. Pay with USDC on Base.
+Give your AI Agents the compute they need to evolve. Rent GPUs by the second. Pay permissionlessly with USDC on Base.
 
 [![x402 Protocol](https://img.shields.io/badge/x402-Protocol-blue)](https://x402.org)
 [![Base L2](https://img.shields.io/badge/Base-Sepolia-0052FF)](https://base.org)
@@ -12,37 +12,35 @@ Turn idle GPUs into income. Rent compute by the second. Pay with USDC on Base.
 
 ## The Problem
 
-**AI is creating massive inequality in computing power.**
+**Legacy cloud infrastructure is built for humans, not Agents.**
 
-### For Individuals & Small Teams
-- **GPU compute is expensive**: $2-4/hr on AWS, minimum commitments of $100s/day
-- **Students and researchers** can't afford to experiment with AI models
-- **Indie developers** can't train their own AI models without breaking the bank
-- **Small startups** can't compete with tech giants who have unlimited compute
+### For Autonomous Agents
+- **Identity Wall**: Agents can't pass KYC or sign up for AWS/GCP.
+- **Payment Barrier**: Credit cards and bank accounts are for humans. Agents have wallets.
+- **The "Brain" Gap**: Local hardware (MacBooks) is too weak for fine-tuning. Agents need high-VRAM GPUs for self-improvement.
+- **Manual Overhead**: Provisioning instances in a dashboard is a human-only task.
 
-### For Tech Giants
-- **Millions of idle GPUs** worldwide (gaming PCs, workstations, data centers)
-- **Cloud providers** charge premium rates for GPU access
-- **Underutilized hardware** sits idle 80% of the time in corporate environments
-- **No efficient way** to monetize unused compute capacity
+### For Resource Owners
+- **Untapped Supply**: Millions of idle 3090s/4090s sit in gaming rigs and workstations.
+- **Friction**: Monetizing a single GPU is too complex for most owners.
+- **Trust**: No secure way to rent out hardware to anonymous software.
 
-**The result?** AI innovation is bottlenecked by compute access. Only the wealthy can experiment. Tech giants waste billions on idle hardware.
+**The result?** Most AI agents are "locked" in their current state, unable to scale their own intelligence because they can't access hardware.
 
 ## The Solution
 
-ComputeSwarm democratizes AI compute through a **peer-to-peer GPU marketplace**:
+ComputeSwarm is **The General-Purpose Compute API for Autonomous Software**.
 
-### For Everyone
-- **Pay per second**: No minimum commitments, no subscriptions
-- **Affordable AI**: Train models for pennies instead of dollars
-- **Immediate access**: GPUs available 24/7 from global network
-- **No hardware investment**: Use powerful GPUs without buying them
+### For Agents
+- **Permissionless**: No signups. Auth is a wallet signature.
+- **Pay Per Second**: No minimums. Stream USDC as the code executes.
+- **Any Workload**: Fine-tune, infer, process data, generate images—send any Docker job.
+- **API-First**: Designed to be integrated into autonomous loops.
 
-### For Tech Giants
-- **Monetize idle capacity**: Turn unused GPUs into revenue streams
-- **Cost-effective alternatives**: Cheaper than cloud providers for many workloads
-- **Specialized hardware**: Access gaming GPUs, workstation cards, exotic accelerators
-- **Decentralized resilience**: No single point of failure, global redundancy
+### For Resource Owners
+- **Bee-Simple Setup**: The "One-Click Hive" agent turns your GPU into a worker node.
+- **Streamed Income**: Watch USDC flow into your wallet in real-time.
+- **Sandboxed Security**: Two-phase execution ensures jobs are air-gapped and safe.
 
 **x402 Protocol** enables trustless, per-second micropayments in USDC on Base L2.
 
