@@ -47,7 +47,7 @@ class MarketplaceConfig(BaseSettings):
     
     # Testnet Mode - When True, payments are simulated; when False, real USDC transfers
     testnet_mode: bool = Field(
-        default=True, 
+        default=False, 
         description="Use simulated payments (testnet) or real transfers (production)"
     )
 
@@ -176,7 +176,9 @@ class SellerConfig(BaseSettings):
             "huggingface.co",
             "github.com",
             "raw.githubusercontent.com",
-            "cdn-lfs.huggingface.co"
+            "cdn-lfs.huggingface.co",
+            "download.pytorch.org",
+            "s3.amazonaws.com"
         ],
         description="Whitelisted domains for network access during setup (DNS-based filtering not implemented, but documented)"
     )
@@ -188,7 +190,7 @@ class SellerConfig(BaseSettings):
     
     # Testnet Mode - When True, payments are simulated; when False, real USDC transfers
     testnet_mode: bool = Field(
-        default=True, 
+        default=False, 
         description="Use simulated payments (testnet) or real transfers (production)"
     )
 

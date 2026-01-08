@@ -702,45 +702,87 @@ async def start_job_execution(job_id: str):
         )
 
 
-@app.post("/api/v1/jobs/{job_id}/complete")
-async def complete_job(
-    job_id: str,
-    output: str,
-    exit_code: int,
-    execution_duration: float,
-    total_cost: float,
-    payment_tx_hash: Optional[str] = None
-):
-    """
-    Mark job as completed with results (Seller endpoint)
-    Called when job finishes successfully
-    """
-    db = get_db_client()
+    async def complete_job(
+        job_id: str,
+        output: str,
+        exit_code: int,
+        execution_duration: float,
+        total_cost: float,
+        payment_tx_hash: Optional[str] = None
+    ):
+        """
+        Mark job as completed with results (Seller endpoint)
+        Called when job finishes successfully
+        
+        CRITICAL: Server-side cost validation is performed here.
+        The seller's reported total_cost is verified against execution_duration * price.
+        """
+        db = get_db_client()
 
-    try:
-        await db.complete_job(
-            job_id=job_id,
-            output=output,
-            exit_code=exit_code,
-            execution_duration=Decimal(str(execution_duration)),
-            total_cost=Decimal(str(total_cost)),
-            payment_tx_hash=payment_tx_hash
-        )
+        try:
+            # Server-side Cost Validation
+            # 1. Fetch the job to get the locked_price_per_hour
+            job = await db.get_job(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+                
+            # 2. Get the agreed price (use max_price as fallback if locked isn't set yet)
+            price_per_hour = None
+            if job.get("locked_price_per_hour"):
+                price_per_hour = Decimal(str(job["locked_price_per_hour"]))
+            else:
+                price_per_hour = Decimal(str(job["max_price_per_hour"]))
+                logger.warning("using_max_price_fallback", job_id=job_id, message="locked_price_per_hour not set")
 
-        logger.info(
-            "job_completed",
-            job_id=job_id,
-            exit_code=exit_code,
-            duration=execution_duration,
-            cost=total_cost
-        )
+            # 3. Calculate expected cost
+            duration_decimal = Decimal(str(execution_duration))
+            # Minimum 1 second billing
+            billed_duration = max(duration_decimal, Decimal("1.0"))
+            
+            expected_cost = (billed_duration * price_per_hour) / Decimal("3600")
+            reported_cost = Decimal(str(total_cost))
+            
+            # 4. Validate (allow small tolerance for float math)
+            # If reported cost is significantly higher (>1% + 1 cent), reject or correct
+            tolerance = expected_cost * Decimal("0.01") + Decimal("0.01")
+            
+            final_cost = reported_cost
+            if abs(reported_cost - expected_cost) > tolerance:
+                logger.warning(
+                    "cost_validation_mismatch",
+                    job_id=job_id,
+                    reported=float(reported_cost),
+                    expected=float(expected_cost),
+                    difference=float(reported_cost - expected_cost)
+                )
+                # Enforce the trusted server-side calculation
+                final_cost = expected_cost
+                logger.info("cost_corrected_by_server", job_id=job_id, new_cost=float(final_cost))
 
-        return {
-            "status": "COMPLETED",
-            "job_id": job_id,
-            "exit_code": exit_code,
-            "total_cost": total_cost
-        }
+            await db.complete_job(
+                job_id=job_id,
+                output=output,
+                exit_code=exit_code,
+                execution_duration=duration_decimal,
+                total_cost=final_cost,
+                payment_tx_hash=payment_tx_hash
+            )
+
+            logger.info(
+                "job_completed",
+                job_id=job_id,
+                exit_code=exit_code,
+                duration=execution_duration,
+                cost=float(final_cost)
+            )
+
+            return {
+                "status": "COMPLETED",
+                "job_id": job_id,
+                "exit_code": exit_code,
+                "total_cost": float(final_cost),
+                "validation": "verified"
+            }
 
     except Exception as e:
         logger.error("job_completion_failed", job_id=job_id, error=str(e))
