@@ -10,12 +10,14 @@ import tempfile
 import os
 import signal
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from dataclasses import dataclass
 from decimal import Decimal
 import time
-
+import threading
 import structlog
+
+from src.execution.proxy import WhitelistProxy
 
 from src.execution.distributed import (
     detect_distributed_backend,
@@ -116,6 +118,32 @@ class JobExecutor:
         self._docker_available: Optional[bool] = None
         self._nvidia_docker_available: Optional[bool] = None
 
+        # Start Whitelist Proxy for Setup Phase
+        self.proxy_whitelist = [
+            "pypi.org", "files.pythonhosted.org",  # PIP
+            "huggingface.co", "cdn-lfs.huggingface.co", # HuggingFace
+            "github.com", "raw.githubusercontent.com", # GitHub
+            "pytorch.org", "download.pytorch.org", # PyTorch
+            "googleapis.com", "storage.googleapis.com", # GCS (often used for assets)
+            "wandb.ai", "api.wandb.ai", # Weights & Biases (setup only)
+            "amazonaws.com", # S3 (generic)
+        ]
+        
+        # Start proxy on random port
+        try:
+            self.proxy = WhitelistProxy(
+                ("", 0),  # Bind to all interfaces on random port
+                allowed_domains=self.proxy_whitelist
+            )
+            self.proxy_port = self.proxy.server_address[1]
+            self.proxy_thread = threading.Thread(target=self.proxy.serve_forever, daemon=True)
+            self.proxy_thread.start()
+            logger.info("whitelist_proxy_started", port=self.proxy_port, allowed_domains=len(self.proxy_whitelist))
+        except Exception as e:
+            logger.error("whitelist_proxy_start_failed", error=str(e))
+            self.proxy = None
+            self.proxy_port = None
+
     async def _check_docker_available(self) -> bool:
         """Check if Docker is available and running"""
         if self._docker_available is not None:
@@ -201,6 +229,44 @@ class JobExecutor:
             return self.docker_image_gpu
         return self.docker_image
 
+    async def _get_gpu_memory_info(self) -> Optional[Dict[str, int]]:
+        """Get GPU memory info (total, free) in MB using nvidia-smi"""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            if process.returncode == 0:
+                line = stdout.decode().strip().split('\n')[0]
+                total, free = map(int, line.split(','))
+                return {"total_mb": total, "free_mb": free}
+        except Exception:
+            pass
+        return None
+
+    async def _verify_gpu_capabilities(self, script: str) -> None:
+        """Verify GPU capabilities for the job"""
+        mem_info = await self._get_gpu_memory_info()
+        if not mem_info:
+            return
+
+        script_lower = script.lower()
+        is_lora = "loraconfig" in script_lower or "peft" in script_lower
+        
+        if is_lora:
+            # Rule of thumb for consumer LoRA (Llama-7b 4bit needs ~6-8GB, 16bit needs ~16GB)
+            if mem_info['total_mb'] < 8000:
+                logger.warning(
+                    "low_vram_warning", 
+                    job_type="LoRA",
+                    vram_mb=mem_info['total_mb'], 
+                    message="GPU has < 8GB VRAM. Fine-tuning may OOM."
+                )
+            else:
+                logger.info("gpu_capacity_verified", job_type="LoRA", vram_mb=mem_info['total_mb'])
+
     async def execute_job(
         self,
         job_id: str,
@@ -231,6 +297,11 @@ class JobExecutor:
         effective_gpu_type = gpu_type or self.gpu_type
         logger.info("job_execution_started", job_id=job_id, timeout=timeout_seconds, 
                    gpu_type=effective_gpu_type, num_gpus=num_gpus)
+        
+        # Check GPU resources if requested
+        if effective_gpu_type == "cuda":
+            await self._verify_gpu_capabilities(script)
+
         start_time = time.time()
 
         # Create isolated workspace for this job
@@ -605,36 +676,36 @@ class JobExecutor:
         """
         Phase 1: Run setup container with network enabled to install requirements
         """
+        # Build base flags (renamed for clarity and reuse)
         cmd = [
             "docker", "run",
             "--rm",
             "--name", setup_container_name,
-            # Network enabled for setup phase
-            # Note: Docker doesn't support domain whitelisting natively
-            # We rely on the setup timeout and monitoring to limit exposure
-            "--memory", self.docker_memory_limit,
-            "--cpus", str(self.docker_cpu_limit),
-            "--pids-limit", str(self.docker_pids_limit),
-            "--tmpfs", f"/tmp:size={self.docker_tmpfs_size}",
-            "--security-opt", "no-new-privileges",
         ]
         
-        # Add GPU passthrough if needed (for model downloads that might use GPU)
-        if use_gpu:
-            if num_gpus >= 8 or num_gpus == 0:
-                if gpu_memory_limit_per_gpu:
-                    gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"{gpu_spec}"'])
-                else:
-                    cmd.extend(["--gpus", "all"])
-            else:
-                if gpu_memory_limit_per_gpu:
-                    gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"{gpu_spec}"'])
-                else:
-                    gpu_spec = ",".join([str(i) for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"device={gpu_spec}"'])
+        # Add resource limits and security options
+        cmd.extend(self._build_resource_flags())
         
+        # Add GPU flags
+        if use_gpu:
+            cmd.extend(self._build_gpu_flags(num_gpus, gpu_memory_limit_per_gpu))
+
+        # Network enabled for setup phase
+        # Note: Docker doesn't support domain whitelisting natively
+        # We rely on the setup timeout and monitoring to limit exposure
+        
+        # Configure Proxy if available
+        if self.proxy and self.proxy_port:
+            proxy_url = f"http://host.docker.internal:{self.proxy_port}"
+            cmd.extend([
+                "--add-host=host.docker.internal:host-gateway",
+                "-e", f"http_proxy={proxy_url}",
+                "-e", f"https_proxy={proxy_url}",
+                "-e", f"HTTP_PROXY={proxy_url}",
+                "-e", f"HTTPS_PROXY={proxy_url}",
+            ])
+            logger.debug("proxy_configured_for_setup", proxy_url=proxy_url)
+
         # Mount model cache for downloads
         cmd.extend([
             "-v", f"{self.model_cache_dir.absolute()}:/root/.cache:rw",
@@ -741,34 +812,21 @@ echo "=== Setup phase complete ==="
         script_file = workspace / "job_script.py"
         
         # Build Docker command with security constraints
+        # Build Docker command with security constraints
         cmd = [
             "docker", "run",
             "--rm",
             "--name", container_name,
             "--network", "none",  # No network access
             "--read-only",  # Read-only filesystem
-            "--tmpfs", f"/tmp:size={self.docker_tmpfs_size}",
-            "--memory", self.docker_memory_limit,
-            "--cpus", str(self.docker_cpu_limit),
-            "--pids-limit", str(self.docker_pids_limit),
-            "--security-opt", "no-new-privileges",
         ]
+
+        # Add resource limits and security options
+        cmd.extend(self._build_resource_flags())
         
-        # Add GPU passthrough if requested
+        # Add GPU flags
         if use_gpu:
-            if num_gpus >= 8 or num_gpus == 0:
-                if gpu_memory_limit_per_gpu:
-                    gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"{gpu_spec}"'])
-                else:
-                    cmd.extend(["--gpus", "all"])
-            else:
-                if gpu_memory_limit_per_gpu:
-                    gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"{gpu_spec}"'])
-                else:
-                    gpu_spec = ",".join([str(i) for i in range(num_gpus)])
-                    cmd.extend(["--gpus", f'"device={gpu_spec}"'])
+            cmd.extend(self._build_gpu_flags(num_gpus, gpu_memory_limit_per_gpu))
             logger.info("gpu_passthrough_enabled", num_gpus=num_gpus, job_id=workspace.name,
                        gpu_memory_limit=gpu_memory_limit_per_gpu)
         
@@ -1224,3 +1282,31 @@ python3 /workspace/job_script.py
                 total += filepath.stat().st_size
 
         return total
+
+    def _build_resource_flags(self) -> list[str]:
+        """Build common resource limit flags"""
+        return [
+            "--memory", self.docker_memory_limit,
+            "--cpus", str(self.docker_cpu_limit),
+            "--pids-limit", str(self.docker_pids_limit),
+            "--tmpfs", f"/tmp:size={self.docker_tmpfs_size}",
+            "--security-opt", "no-new-privileges",
+        ]
+
+    def _build_gpu_flags(self, num_gpus: int, gpu_memory_limit_per_gpu: Optional[str]) -> list[str]:
+        """Build GPU flags for proper passthrough"""
+        flags = []
+        if num_gpus >= 8 or num_gpus == 0:
+            if gpu_memory_limit_per_gpu:
+                gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
+                flags.extend(["--gpus", f'"{gpu_spec}"'])
+            else:
+                flags.extend(["--gpus", "all"])
+        else:
+            if gpu_memory_limit_per_gpu:
+                gpu_spec = ",".join([f"device={i}:memory={gpu_memory_limit_per_gpu}" for i in range(num_gpus)])
+                flags.extend(["--gpus", f'"{gpu_spec}"'])
+            else:
+                gpu_spec = ",".join([str(i) for i in range(num_gpus)])
+                flags.extend(["--gpus", f'"device={gpu_spec}"'])
+        return flags
