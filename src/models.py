@@ -22,7 +22,6 @@ class GPUType(str, Enum):
 class DistributedBackend(str, Enum):
     """Supported distributed training backends"""
     DDP = "ddp"
-    HOROVOD = "horovod"
     NONE = "none"
 
 
@@ -89,6 +88,7 @@ class ComputeNode(BaseModel):
     last_heartbeat: Optional[datetime] = None
     created_at: Optional[datetime] = None
     seller_profile_id: Optional[str] = None
+    p2p_url: Optional[str] = None
 
     class Config:
         json_encoders = {

@@ -14,7 +14,6 @@ logger = structlog.get_logger()
 class DistributedBackend(str):
     """Supported distributed training backends"""
     DDP = "ddp"
-    HOROVOD = "horovod"
     NONE = "none"
 
 
@@ -43,20 +42,6 @@ def detect_distributed_backend(script: str) -> DistributedBackend:
         if re.search(pattern, script_lower):
             logger.info("ddp_detected", pattern=pattern)
             return DistributedBackend.DDP
-    
-    # Check for Horovod
-    horovod_patterns = [
-        r"import horovod",
-        r"import horovod\.torch",
-        r"import horovod\.tensorflow",
-        r"hvd\.init",
-        r"horovodrun",
-    ]
-    
-    for pattern in horovod_patterns:
-        if re.search(pattern, script_lower):
-            logger.info("horovod_detected", pattern=pattern)
-            return DistributedBackend.HOROVOD
     
     return DistributedBackend.NONE
 
@@ -114,58 +99,6 @@ def setup_ddp_environment(
     return env_vars
 
 
-def setup_horovod_environment(
-    num_gpus: int,
-    num_nodes: int = 1,
-    hostname: Optional[str] = None,
-    rank: Optional[int] = None,
-    local_rank: Optional[int] = None
-) -> Dict[str, str]:
-    """
-    Set up environment variables for Horovod
-    
-    Args:
-        num_gpus: Number of GPUs per node
-        num_nodes: Number of nodes (default: 1)
-        hostname: Hostname for this node (optional)
-        rank: Process rank (optional)
-        local_rank: Local GPU index (optional)
-        
-    Returns:
-        Dictionary of environment variables to set
-    """
-    env_vars = {}
-    
-    # Horovod environment variables
-    env_vars["HOROVOD_GPU"] = "1"  # Enable GPU support
-    env_vars["HOROVOD_NCCL_HOME"] = "/usr/local/nccl"  # Default NCCL location
-    
-    # Set number of processes
-    total_processes = num_gpus * num_nodes
-    env_vars["HOROVOD_SIZE"] = str(total_processes)
-    
-    if rank is not None:
-        env_vars["HOROVOD_RANK"] = str(rank)
-    if local_rank is not None:
-        env_vars["HOROVOD_LOCAL_RANK"] = str(local_rank)
-    
-    if hostname:
-        env_vars["HOROVOD_HOSTNAME"] = hostname
-    
-    # Set CUDA visible devices if not already set
-    if "CUDA_VISIBLE_DEVICES" not in os.environ:
-        cuda_devices = ",".join([str(i) for i in range(num_gpus)])
-        env_vars["CUDA_VISIBLE_DEVICES"] = cuda_devices
-    
-    logger.info(
-        "horovod_environment_setup",
-        num_gpus=num_gpus,
-        num_nodes=num_nodes,
-        rank=rank,
-        local_rank=local_rank
-    )
-    
-    return env_vars
 
 
 def get_distributed_env_vars(
@@ -213,15 +146,8 @@ def get_distributed_env_vars(
                 rank=rank,
                 local_rank=local_rank
             )
-    elif backend == DistributedBackend.HOROVOD:
-        return setup_horovod_environment(
-            num_gpus=num_gpus,
-            num_nodes=num_nodes,
-            rank=rank,
-            local_rank=local_rank
-        )
     else:
-        # No distributed training detected
+        # No distributed training detected or unsupported
         return {}
 
 
