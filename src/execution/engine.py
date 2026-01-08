@@ -131,11 +131,14 @@ class JobExecutor:
         
         # Start proxy on random port
         try:
-            self.proxy = WhitelistProxy(
-                ("", 0),  # Bind to all interfaces on random port
-                allowed_domains=self.proxy_whitelist
-            )
+            import socketserver
+            # Update whitelist on the handler class
+            WhitelistProxy.whitelist = self.proxy_whitelist
+            
+            # Create server with ephemeral port
+            self.proxy = socketserver.TCPServer(("", 0), WhitelistProxy)
             self.proxy_port = self.proxy.server_address[1]
+            
             self.proxy_thread = threading.Thread(target=self.proxy.serve_forever, daemon=True)
             self.proxy_thread.start()
             logger.info("whitelist_proxy_started", port=self.proxy_port, allowed_domains=len(self.proxy_whitelist))

@@ -49,15 +49,25 @@ class DatabaseClient:
         if node.seller_profile_id:
             node_data["seller_profile_id"] = node.seller_profile_id
 
+        if node.p2p_url:
+            node_data["p2p_url"] = node.p2p_url
+
         result = self.client.table("compute_nodes").upsert(node_data).execute()
         return node
 
-    async def update_node_heartbeat(self, node_id: str) -> None:
-        """Update node's last heartbeat timestamp"""
-        self.client.table("compute_nodes").update({
+
+    async def update_node_heartbeat(self, node_id: str, p2p_url: Optional[str] = None) -> None:
+        """Update node's last heartbeat timestamp and optionally P2P URL"""
+        data = {
             "last_heartbeat": datetime.utcnow().isoformat(),
             "is_available": True
-        }).eq("node_id", node_id).execute()
+        }
+        
+        if p2p_url:
+            data["p2p_url"] = p2p_url
+            
+        self.client.table("compute_nodes").update(data).eq("node_id", node_id).execute()
+
 
     async def set_node_availability(self, node_id: str, available: bool) -> None:
         """Set node availability status"""

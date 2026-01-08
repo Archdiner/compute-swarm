@@ -6,4 +6,4 @@ set -e
 echo "Testing GPU Detection..."
 echo ""
 
-python -m src.compute.gpu_detector
+python -m src.execution.gpu_detector

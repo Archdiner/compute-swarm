@@ -47,3 +47,6 @@ slowapi>=0.1.9,<1.0.0
 
 # Vercel Serverless (for FastAPI)
 mangum>=0.17.0,<1.0.0
+
+# Networking
+pyngrok>=7.1.0,<8.0.0

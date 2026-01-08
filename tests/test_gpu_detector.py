@@ -5,7 +5,7 @@ Unit tests for GPU detection
 import pytest
 from unittest.mock import Mock, patch
 
-from src.compute.gpu_detector import GPUDetector
+from src.execution.gpu_detector import GPUDetector
 from src.marketplace.models import GPUType
 
 
@@ -28,11 +28,13 @@ class TestGPUDetection:
         assert device in ["cuda", "mps", "cpu"]
 
     @patch('torch.cuda.is_available')
+    @patch('torch.cuda.device_count')
     @patch('torch.cuda.get_device_name')
     @patch('torch.cuda.get_device_properties')
-    def test_detect_cuda_when_available(self, mock_props, mock_name, mock_available):
+    def test_detect_cuda_when_available(self, mock_props, mock_name, mock_count, mock_available):
         """Test CUDA detection when CUDA is available"""
         mock_available.return_value = True
+        mock_count.return_value = 1
         mock_name.return_value = "NVIDIA RTX 4090"
 
         mock_properties = Mock()

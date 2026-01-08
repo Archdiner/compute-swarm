@@ -280,7 +280,7 @@ cd "$PROJECT_ROOT"
 source venv/bin/activate
 
 GPU_TEST=$(python -c "
-from src.compute.gpu_detector import GPUDetector
+from src.execution.gpu_detector import GPUDetector
 gpu = GPUDetector.detect_gpu()
 print(f'{gpu.gpu_type.value}|{gpu.device_name}|{gpu.vram_gb or 0}')
 " 2>/dev/null || echo "error|unknown|0")

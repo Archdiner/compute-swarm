@@ -104,6 +104,29 @@ class JobRequest(BaseModel):
         }
 
 
+class JobSubmissionRequest(BaseModel):
+    """Request to execute a compute job"""
+    buyer_address: str = Field(description="Wallet address of the buyer")
+    script: str = Field(description="Python script to execute")
+    requirements: Optional[str] = Field(default=None, description="Pip requirements (newline separated)")
+    max_price_per_hour: float = Field(default=10.0, description="Max hourly price in USD")
+    timeout_seconds: int = Field(default=3600, description="Job timeout")
+    required_gpu_type: Optional[str] = Field(default=None)
+    min_vram_gb: Optional[float] = Field(default=None)
+    num_gpus: int = Field(default=1)
+    gpu_memory_limit_per_gpu: Optional[str] = Field(default=None)
+    resume_from_checkpoint: Optional[str] = Field(default=None)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "buyer_address": "0x...",
+                "script": "print('hello')",
+                "requirements": "numpy",
+                "max_price_per_hour": 1.0
+            }
+        }
+
 class Job(BaseModel):
     """Represents a compute job"""
     job_id: str

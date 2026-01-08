@@ -20,7 +20,7 @@ from uvicorn import Config, Server
 from eth_account import Account
 from pathlib import Path
 
-from src.compute.gpu_detector import GPUDetector
+from src.execution.gpu_detector import GPUDetector
 from src.marketplace.models import NodeRegistration, GPUType
 from src.config import get_seller_config
 from src.execution import JobExecutor
@@ -602,7 +602,8 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
-    config = Config(app=agent.app, host="0.0.0.0", port=8001, log_level="warning")
+    port = int(os.getenv("SELLER_PORT", "8001"))
+    config = Config(app=agent.app, host="0.0.0.0", port=port, log_level="warning")
     server = Server(config)
     server_task = asyncio.create_task(server.serve())
     
